@@ -48,8 +48,8 @@ st.header("4. Cálculo y Explicación de Fórmula Decreciente (Ley 797)")
 # BASE DE DATOS SMLMV - ACTUALIZACIÓN ANUAL
 # Para actualizar cada año, simplemente agrega una nueva línea al inicio de este diccionario.
 smlmv_historico = {
-    2026: 1550000, # Valor de referencia/proyectado
-    2025: 1423500, # Valor de referencia/proyectado
+    2026: 1750905, # Valor exacto ajustado
+    2025: 1423500, 
     2024: 1300000,
     2023: 1160000,
     2022: 1000000,
