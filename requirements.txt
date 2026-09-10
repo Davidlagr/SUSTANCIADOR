@@ -1,3 +1,6 @@
 streamlit
 python-docx
 PyPDF2
+langchain
+langchain-huggingface
+langchain-core
