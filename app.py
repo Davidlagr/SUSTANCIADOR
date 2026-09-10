@@ -75,7 +75,7 @@ def extraer_datos_consolidados(texto):
         if match_edad:
             st.session_state.edad = int(match_edad.group(1))
 
-    # 5. Buscar Semanas (Prioriza formato Historia Laboral, luego Resoluciones)
+    # 5. Buscar Semanas
     match_sem_hl = re.search(r'TOTAL SEMANAS COTIZADAS[\s:]*([\d.,]+)', texto, re.IGNORECASE)
     if match_sem_hl:
         num = match_sem_hl.group(1).replace('.', '').replace(',', '.')
@@ -121,8 +121,8 @@ def calcular_derecho_pensional(edad, semanas, genero, ibl, smmlv):
 # --- 3. ANÁLISIS A FONDO Y REDACCIÓN VÍA IA CONVERSACIONAL ---
 def redactar_acto_ia(datos_solicitante, calculos, api_key):
     try:
-        # CAMBIO CLAVE: Usamos zephyr-7b-beta que SÍ soporta 'conversational' en la API gratuita
-        cliente = InferenceClient(model="HuggingFaceH4/zephyr-7b-beta", token=api_key)
+        # CAMBIO CLAVE: Usamos Qwen2.5-72B-Instruct. Es el modelo estrella soportado por la API gratuita actualmente.
+        cliente = InferenceClient(model="Qwen/Qwen2.5-72B-Instruct", token=api_key)
         
         mensajes = [
             {
@@ -160,7 +160,7 @@ Descuento de Salud aplicable: {calculos['desc_salud']}"""
         return respuesta.choices[0].message.content
         
     except Exception as e:
-        raise Exception(f"Fallo de conexión con el modelo. Detalle técnico: {str(e)}")
+        raise Exception(f"Fallo de conexión con el modelo (API Conversacional). Detalle técnico: {str(e)}")
 
 def generar_word(texto_motivacion):
     doc = Document()
@@ -176,7 +176,7 @@ def generar_word(texto_motivacion):
 st.sidebar.header("⚙️ Configuración del Agente")
 
 # Módulo de Token Manual
-token_input = st.sidebar.text_input("Hugging Face API Token:", type="password", help="Genera un token sin caducidad en Hugging Face y pégalo aquí.")
+token_input = st.sidebar.text_input("Hugging Face API Token:", type="password", help="Pega tu token de Hugging Face aquí.")
 
 if st.sidebar.button("Activar Token", use_container_width=True):
     if token_input.strip():
