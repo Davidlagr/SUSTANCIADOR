@@ -10,11 +10,14 @@ import json
 from langchain_huggingface import HuggingFaceEndpoint
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
-from langchain_core.pydantic_v1 import BaseModel, Field
+
+# Pydantic Import (Corregido para LangChain 0.3+)
+from pydantic import BaseModel, Field
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Agente Sustanciador RPM - LangChain", layout="wide")
 
+# Inicializar estado de variables
 if 'ibl' not in st.session_state: st.session_state.ibl = 1500000.0
 if 'smmlv' not in st.session_state: st.session_state.smmlv = 1300000.0
 if 'semanas' not in st.session_state: st.session_state.semanas = 0
@@ -48,13 +51,13 @@ def leer_multiples_archivos(lista_archivos):
 
 # --- ESTRUCTURA DE DATOS ESPERADA (PYDANTIC) ---
 class DatosPension(BaseModel):
-    semanas: int = Field(description="Total de semanas cotizadas encontradas en el documento")
-    ibl: float = Field(description="Ingreso Base de Liquidación (IBL) en formato numérico sin símbolos")
-    edad: int = Field(description="Edad del peticionario. Si hay fecha de nacimiento, calcular edad al año actual")
+    semanas: int = Field(description="Total exacto numérico de semanas cotizadas encontradas en el documento")
+    ibl: float = Field(description="Ingreso Base de Liquidación (IBL) o Liquidación en formato numérico sin símbolos ni comas")
+    edad: int = Field(description="Edad numérica del peticionario. Si hay fecha de nacimiento, calcula la edad respecto al año actual")
 
 # --- CADENA DE ANÁLISIS LANGCHAIN ---
 def analizar_con_langchain(texto_documento, api_key):
-    # Inicializar el modelo Open Source (Mixtral)
+    # Inicializar el modelo Open Source
     llm = HuggingFaceEndpoint(
         repo_id="mistralai/Mixtral-8x7B-Instruct-v0.1",
         huggingfacehub_api_token=api_key,
@@ -132,7 +135,7 @@ with col_izq:
             if not api_key:
                 st.warning("Ingrese su Token de HuggingFace en el panel lateral.")
             else:
-                with st.spinner(f'Ejecuting LangChain Pipeline...'):
+                with st.spinner(f'Ejecutando Pipeline Semántico...'):
                     texto_consolidado = leer_multiples_archivos(archivos_cargados)
                     st.session_state.texto_documento = texto_consolidado
                     
@@ -145,7 +148,7 @@ with col_izq:
                         st.session_state.datos_capturados = True
                         st.success("✅ Extracción Semántica Completada.")
                     except Exception as e:
-                        st.error(str(e))
+                        st.error(f"Error de procesamiento: {e}")
                 
     if st.session_state.datos_capturados:
         c1, c2, c3 = st.columns(3)
