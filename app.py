@@ -14,8 +14,8 @@ from langchain_core.prompts import PromptTemplate
 st.set_page_config(page_title="Agente Sustanciador Híbrido", layout="wide")
 
 # --- TOKEN INTEGRADO ---
-# Reemplaza permanentemente la necesidad de ingresarlo en la interfaz
-HF_TOKEN = "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"
+# Token actualizado
+HF_TOKEN = "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"
 
 # Inicialización de estado de variables extraídas (Token-Free)
 vars_keys = ['nombre', 'cedula', 'ibl', 'smmlv', 'semanas', 'edad', 'genero', 'motivacion_generada']
