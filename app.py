@@ -4,240 +4,257 @@ from io import BytesIO
 import math
 import PyPDF2
 from datetime import datetime
-import json
+import re
 
 # LangChain Imports
 from langchain_huggingface import HuggingFaceEndpoint
 from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
-
-# Pydantic Import (Corregido para LangChain 0.3+)
-from pydantic import BaseModel, Field
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Agente Sustanciador RPM - LangChain", layout="wide")
+st.set_page_config(page_title="Agente Sustanciador Híbrido", layout="wide")
 
-# Inicializar estado de variables
-if 'ibl' not in st.session_state: st.session_state.ibl = 1500000.0
-if 'smmlv' not in st.session_state: st.session_state.smmlv = 1300000.0
-if 'semanas' not in st.session_state: st.session_state.semanas = 0
-if 'edad' not in st.session_state: st.session_state.edad = 0
-if 'texto_documento' not in st.session_state: st.session_state.texto_documento = ""
-if 'datos_capturados' not in st.session_state: st.session_state.datos_capturados = False
+# Inicialización de estado de variables extraídas (Token-Free)
+vars_keys = ['nombre', 'cedula', 'ibl', 'smmlv', 'semanas', 'edad', 'genero', 'motivacion_generada']
+for key in vars_keys:
+    if key not in st.session_state:
+        st.session_state[key] = "" if key in ['nombre', 'cedula', 'motivacion_generada'] else 0
 
-st.title("⚖️ Agente Sustanciador - Motor LangChain")
-st.markdown("Análisis semántico avanzado de Historias Laborales y Resoluciones mediante cadenas de LangChain y parseo estructurado.")
+if 'ibl' not in st.session_state or st.session_state.ibl == 0: st.session_state.ibl = 1500000.0
+if 'smmlv' not in st.session_state or st.session_state.smmlv == 0: st.session_state.smmlv = 1300000.0
+if 'genero' not in st.session_state or st.session_state.genero == 0: st.session_state.genero = "Femenino"
 
-# --- LECTURA DE MÚLTIPLES ARCHIVOS ---
-def leer_multiples_archivos(lista_archivos):
-    texto_total = ""
-    for archivo in lista_archivos:
-        texto_total += f"\n\n--- INICIO DOCUMENTO: {archivo.name} ---\n\n"
+st.title("⚖️ Agente Sustanciador - Arquitectura Híbrida")
+st.markdown("1. Extracción gratuita mediante motor local. | 2. Cálculos matemáticos de precisión. | 3. Redacción jurídica profunda vía IA (LangChain).")
+
+# --- 1. MÓDULO DE LECTURA Y EXTRACCIÓN (TOKEN-FREE) ---
+def extraer_texto(archivo):
+    texto = ""
+    try:
+        if archivo.name.endswith('.pdf'):
+            lector = PyPDF2.PdfReader(archivo)
+            for pagina in lector.pages:
+                if pagina.extract_text(): texto += pagina.extract_text() + "\n"
+        elif archivo.name.endswith('.docx'):
+            doc = Document(archivo)
+            for parrafo in doc.paragraphs: texto += parrafo.text + "\n"
+        elif archivo.name.endswith('.txt'):
+            texto = archivo.read().decode('utf-8')
+    except Exception as e:
+        st.error(f"Error al leer {archivo.name}: {e}")
+    return texto
+
+def procesar_historia_laboral(texto):
+    # Buscar semanas totales
+    match_hl = re.search(r'TOTAL SEMANAS COTIZADAS[\s:]*([\d.,]+)', texto, re.IGNORECASE)
+    if match_hl:
+        num = match_hl.group(1).replace('.', '').replace(',', '.')
+        st.session_state.semanas = int(float(num))
+    
+    # Buscar fecha nacimiento para calcular edad
+    match_nac = re.search(r'Nacimiento[\s:]*(\d{2}/\d{2}/\d{4})', texto, re.IGNORECASE)
+    if match_nac:
         try:
-            if archivo.name.endswith('.pdf'):
-                lector = PyPDF2.PdfReader(archivo)
-                for pagina in lector.pages:
-                    if pagina.extract_text():
-                        texto_total += pagina.extract_text() + "\n"
-            elif archivo.name.endswith('.docx'):
-                doc = Document(archivo)
-                for parrafo in doc.paragraphs:
-                    texto_total += parrafo.text + "\n"
-            elif archivo.name.endswith('.txt'):
-                texto_total += archivo.read().decode('utf-8') + "\n"
-        except Exception as e:
-            st.error(f"Error al leer el archivo {archivo.name}: {e}")
-    return texto_total
+            fnac = datetime.strptime(match_nac.group(1), '%d/%m/%Y')
+            st.session_state.edad = datetime.now().year - fnac.year
+        except: pass
+        
+    # Buscar Nombre y Cédula
+    match_ced = re.search(r'(?:Número de Documento|C\.?C\.?)[\s:]*([\d.,]+)', texto, re.IGNORECASE)
+    if match_ced: st.session_state.cedula = match_ced.group(1).replace('.', '').strip()
+    
+    match_nom = re.search(r'Nombre[\s:]*([A-Za-zÑñÁÉÍÓÚáéíóú\s]+)', texto, re.IGNORECASE)
+    if match_nom:
+        n = match_nom.group(1).strip()
+        if len(n) > 3 and "Dirección" not in n: st.session_state.nombre = n
 
-# --- ESTRUCTURA DE DATOS ESPERADA (PYDANTIC) ---
-class DatosPension(BaseModel):
-    semanas: int = Field(description="Total exacto numérico de semanas cotizadas encontradas en el documento")
-    ibl: float = Field(description="Ingreso Base de Liquidación (IBL) o Liquidación en formato numérico sin símbolos ni comas")
-    edad: int = Field(description="Edad numérica del peticionario. Si hay fecha de nacimiento, calcula la edad respecto al año actual")
+def procesar_resolucion(texto):
+    match_ibl = re.search(r'(?:IBL|Liquidación[\s\w]*de)[\s:\$]*([\d.,]{6,})', texto, re.IGNORECASE)
+    if match_ibl:
+        num = match_ibl.group(1).replace(',', '').replace('.', '')
+        if num.isdigit(): st.session_state.ibl = float(num)
+        
+    match_res = re.search(r'([\d.,]+)\s*semanas', texto, re.IGNORECASE)
+    if match_res and st.session_state.semanas == 0:
+        num = match_res.group(1).replace(',', '').replace('.', '')
+        if num.isdigit(): st.session_state.semanas = int(num)
 
-# --- CADENA DE ANÁLISIS LANGCHAIN ---
-def analizar_con_langchain(texto_documento, api_key):
-    # Inicializar el modelo Open Source
+def procesar_peticion(texto):
+    match_edad = re.search(r'(?:edad\s*de\s*)?(\d{2})\s*años', texto, re.IGNORECASE)
+    if match_edad and st.session_state.edad == 0:
+        st.session_state.edad = int(match_edad.group(1))
+
+# --- 2. CÁLCULO MATEMÁTICO DE REGLAS (TOKEN-FREE) ---
+def calcular_derecho_pensional(edad, semanas, genero, ibl, smmlv):
+    # Reglas extraídas del documento legal Colpensiones
+    edad_req = 57 if genero == "Femenino" else 62
+    cumple_edad = edad >= edad_req
+    cumple_semanas = semanas >= 1300
+    
+    s = ibl / smmlv if smmlv > 0 else 0
+    porcentaje_base = max(65.50 - (0.50 * s), 55.5)
+    semanas_adicionales = max(0, semanas - 1300)
+    grupos_de_50 = math.floor(semanas_adicionales / 50)
+    puntos_adicionales = min(grupos_de_50 * 1.5, 15.0) # Tope 15 puntos (Art 34 Ley 100/ Ley 797)
+    tasa_final = min(porcentaje_base + puntos_adicionales, 80.0) # Tope 80%
+    
+    # Descuento de Salud
+    mesada_calculada = ibl * (tasa_final / 100)
+    if mesada_calculada <= smmlv: desc_salud = "4%"
+    elif mesada_calculada <= (smmlv * 2): desc_salud = "10%"
+    else: desc_salud = "12%"
+    
+    return {
+        "cumple_derecho": cumple_edad and cumple_semanas,
+        "faltante_semanas": 1300 - semanas if not cumple_semanas else 0,
+        "tasa_final": tasa_final,
+        "desc_salud": desc_salud,
+        "mesada": mesada_calculada
+    }
+
+# --- 3. ANÁLISIS A FONDO Y REDACCIÓN VÍA LANGCHAIN (CONSUME TOKENS) ---
+def redactar_acto_langchain(datos_solicitante, calculos, api_key):
     llm = HuggingFaceEndpoint(
         repo_id="mistralai/Mixtral-8x7B-Instruct-v0.1",
         huggingfacehub_api_token=api_key,
-        temperature=0.1,
-        max_new_tokens=512
+        temperature=0.2,
+        max_new_tokens=1024
     )
     
-    # Configurar el Parser para asegurar salida JSON
-    parser = JsonOutputParser(pydantic_object=DatosPension)
+    plantilla = """[INST] Eres un sustanciador experto de Colpensiones. Redacta la sección "CONSIDERANDO" de una resolución administrativa en Colombia (Ley 100 de 1993 y Ley 797 de 2003). 
     
-    # Crear el Prompt Template con las instrucciones de formato inyectadas
+    REGLAS ESTRICTAS DE REDACCIÓN:
+    - Inicia directamente con el texto legal. No saludes ni hagas introducciones.
+    - Si cumple el derecho, fundamenta el reconocimiento, detalla el cálculo de la tasa de reemplazo y menciona el descuento de salud aplicable.
+    - Si NO cumple el derecho, redacta una negativa empática, explicando claramente cuántas semanas le faltan y mencionando la alternativa de la Indemnización Sustitutiva de Vejez.
+    
+    DATOS DEL PETICIONARIO A INCLUIR:
+    Nombre: {nombre}
+    Cédula: {cedula}
+    Género: {genero}
+    Edad Actual: {edad} años
+    Semanas Cotizadas Validadas: {semanas}
+    IBL Calculado: ${ibl}
+    
+    RESULTADO DEL ANÁLISIS TÉCNICO (OBLIGATORIO APLICAR):
+    ¿Cumple el derecho?: {cumple_derecho}
+    Semanas faltantes (si aplica): {faltante_semanas}
+    Tasa de Reemplazo Final: {tasa_final}%
+    Descuento de Salud aplicable (Ley 2018 de 2020): {desc_salud}
+    [/INST]"""
+    
     prompt = PromptTemplate(
-        template="""Eres un experto jurídico analizando expedientes pensionales.
-        Extrae la siguiente información del documento proporcionado.
-        
-        {format_instructions}
-        
-        DOCUMENTO:
-        {texto}
-        """,
-        input_variables=["texto"],
-        partial_variables={"format_instructions": parser.get_format_instructions()},
+        template=plantilla,
+        input_variables=["nombre", "cedula", "genero", "edad", "semanas", "ibl", "cumple_derecho", "faltante_semanas", "tasa_final", "desc_salud"]
     )
     
-    # Ensamblar la cadena (Chain)
-    cadena = prompt | llm | parser
+    cadena = prompt | llm
     
-    # Ejecutar la cadena
-    try:
-        # Limitamos el texto para no exceder la ventana de contexto del modelo si es muy largo
-        texto_truncado = texto_documento[:15000] 
-        resultado = cadena.invoke({"texto": texto_truncado})
-        return resultado
-    except Exception as e:
-        raise Exception(f"Fallo en la extracción de LangChain: {e}")
-
-# --- FUNCIONES DE CÁLCULO Y WORD ---
-def calcular_tasa_reemplazo(ibl, smmlv, semanas_totales):
-    s = ibl / smmlv if smmlv > 0 else 0
-    porcentaje_base = max(65.50 - (0.50 * s), 55.5)
-    semanas_adicionales = max(0, semanas_totales - 1300)
-    grupos_de_50 = math.floor(semanas_adicionales / 50)
-    puntos_adicionales = min(grupos_de_50 * 1.5, 15.0)
-    tasa_final = min(porcentaje_base + puntos_adicionales, 80.0)
-    return s, porcentaje_base, grupos_de_50, puntos_adicionales, tasa_final
+    parametros = {
+        "nombre": datos_solicitante['nombre'],
+        "cedula": datos_solicitante['cedula'],
+        "genero": datos_solicitante['genero'],
+        "edad": str(datos_solicitante['edad']),
+        "semanas": str(datos_solicitante['semanas']),
+        "ibl": f"{datos_solicitante['ibl']:,.0f}",
+        "cumple_derecho": "SÍ" if calculos['cumple_derecho'] else "NO",
+        "faltante_semanas": str(calculos['faltante_semanas']),
+        "tasa_final": f"{calculos['tasa_final']:.2f}",
+        "desc_salud": calculos['desc_salud']
+    }
+    
+    return cadena.invoke(parametros)
 
 def generar_word(texto_motivacion):
     doc = Document()
     doc.add_heading('MOTIVACIÓN DEL ACTO ADMINISTRATIVO', 0)
     for parrafo in texto_motivacion.split('\n'):
-        if parrafo.strip():
-            doc.add_paragraph(parrafo.strip())
+        if parrafo.strip(): doc.add_paragraph(parrafo.strip())
     buffer = BytesIO()
     doc.save(buffer)
     buffer.seek(0)
     return buffer
 
 # --- INTERFAZ DE USUARIO ---
-st.sidebar.header("⚙️ Motor LangChain")
-api_key = st.sidebar.text_input("HuggingFace API Token:", type="password", help="Requerido para la inferencia semántica del LLM")
+st.sidebar.header("⚙️ Análisis LangChain")
+api_key = st.sidebar.text_input("HuggingFace API Token:", type="password", help="Solo se utilizará para la redacción final, ahorrando tokens.")
 
-col_izq, col_der = st.columns([1, 1.2])
+col1, col2 = st.columns([1, 1.2])
 
-with col_izq:
-    st.subheader("📄 1. Análisis de Expediente")
+with col1:
+    st.subheader("📂 1. Módulos de Carga de Documentos")
+    st.info("La extracción local mediante patrones es gratuita e inmediata.")
     
-    archivos_cargados = st.file_uploader(
-        "Adjuntar expedientes (PDF, Word, TXT)", 
-        type=["pdf", "docx", "txt"], 
-        accept_multiple_files=True
-    )
+    arc_hl = st.file_uploader("A. Historia Laboral (PDF)", type=["pdf", "txt"], key="hl")
+    arc_res = st.file_uploader("B. Resoluciones Previas (PDF, Word)", type=["pdf", "docx", "txt"], key="res")
+    arc_pet = st.file_uploader("C. Petición del Ciudadano (PDF, Word)", type=["pdf", "docx", "txt"], key="pet")
     
-    if archivos_cargados:
-        if st.button("🧠 Ejecutar Cadena LangChain", use_container_width=True):
-            if not api_key:
-                st.warning("Ingrese su Token de HuggingFace en el panel lateral.")
-            else:
-                with st.spinner(f'Ejecutando Pipeline Semántico...'):
-                    texto_consolidado = leer_multiples_archivos(archivos_cargados)
-                    st.session_state.texto_documento = texto_consolidado
-                    
-                    try:
-                        datos = analizar_con_langchain(texto_consolidado, api_key)
-                        
-                        st.session_state.semanas = datos.get("semanas", 0)
-                        st.session_state.ibl = datos.get("ibl", 1500000.0)
-                        st.session_state.edad = datos.get("edad", 60)
-                        st.session_state.datos_capturados = True
-                        st.success("✅ Extracción Semántica Completada.")
-                    except Exception as e:
-                        st.error(f"Error de procesamiento: {e}")
-                
-    if st.session_state.datos_capturados:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Semanas", f"{st.session_state.semanas}")
-        c2.metric("IBL", f"${st.session_state.ibl:,.0f}")
-        c3.metric("Edad", f"{st.session_state.edad} años")
-                
-    if st.session_state.texto_documento:
-        with st.expander("Ver texto consolidado de los documentos", expanded=False):
-            st.text_area("Texto extraído:", st.session_state.texto_documento, height=250)
+    if st.button("🔍 Extraer Datos del Solicitante (Local / Sin Tokens)", use_container_width=True):
+        with st.spinner("Leyendo documentos..."):
+            if arc_hl: procesar_historia_laboral(extraer_texto(arc_hl))
+            if arc_res: procesar_resolucion(extraer_texto(arc_res))
+            if arc_pet: procesar_peticion(extraer_texto(arc_pet))
+            st.success("Extracción completada. Revise los datos consolidados a la derecha.")
 
-with col_der:
-    st.subheader("⚙️ 2. Variables y Decisión")
+with col2:
+    st.subheader("👤 2. Perfil del Solicitante y Variables")
     
-    col_a, col_b = st.columns(2)
-    with col_a:
-        genero = st.selectbox("Género del Peticionario:", ["Femenino", "Masculino"])
-        edad_input = st.number_input("Edad verificada:", min_value=0, value=st.session_state.edad, step=1)
-    with col_b:
-        semanas_input = st.number_input("Semanas a reconocer:", min_value=0, value=st.session_state.semanas, step=1)
+    c_nom, c_ced = st.columns(2)
+    with c_nom:
+        st.session_state.nombre = st.text_input("Nombre Completo:", value=st.session_state.nombre)
+    with c_ced:
+        st.session_state.cedula = st.text_input("Cédula:", value=st.session_state.cedula)
+        
+    c_gen, c_edad, c_sem = st.columns(3)
+    with c_gen:
+        st.session_state.genero = st.selectbox("Género:", ["Femenino", "Masculino"], index=0 if st.session_state.genero == "Femenino" else 1)
+    with c_edad:
+        st.session_state.edad = st.number_input("Edad:", min_value=0, value=st.session_state.edad)
+    with c_sem:
+        st.session_state.semanas = st.number_input("Semanas Validadas:", min_value=0, value=st.session_state.semanas)
+        
+    c_ibl, c_smmlv = st.columns(2)
+    with c_ibl:
+        st.session_state.ibl = st.number_input("IBL Calculado ($):", min_value=0.0, value=float(st.session_state.ibl), step=10000.0)
+    with c_smmlv:
+        st.session_state.smmlv = st.number_input("SMMLV aplicable ($):", min_value=0.0, value=float(st.session_state.smmlv), step=10000.0)
         
     st.divider()
-    ibl_input = st.number_input("Ingreso Base de Liquidación (IBL):", min_value=0.0, value=float(st.session_state.ibl), step=10000.0)
-    smmlv_input = st.number_input("SMMLV aplicable:", min_value=0.0, value=st.session_state.smmlv, step=10000.0)
     
-    st.divider()
-    
-    if st.button("⚖️ Evaluar y Proyectar Acto Administrativo", use_container_width=True):
-        
-        edad_requerida = 57 if genero == "Femenino" else 62
-        cumple_edad = edad_input >= edad_requerida
-        cumple_semanas = semanas_input >= 1300
-        
-        if cumple_edad and cumple_semanas:
-            st.success("🟢 ESTADO: CUMPLE REQUISITOS. Generando reconocimiento.")
-            s, p_base, grupos, p_add, t_final = calcular_tasa_reemplazo(ibl_input, smmlv_input, semanas_input)
-            
-            motivacion = f"""CONSIDERANDO:
-
-Que de conformidad con el artículo 33 de la Ley 100 de 1993, modificado por el artículo 9 de la Ley 797 de 2003, para tener derecho a la Pensión de Vejez es necesario acreditar las edades establecidas en la norma y un mínimo de 1.300 semanas de cotización.
-
-Que el(la) afiliado(a) cuenta con {edad_input} años de edad, cumpliendo con la edad exigida por la normatividad vigente para el género {genero.lower()} ({edad_requerida} años).
-
-Que revisada la historia laboral y demás documentos allegados, el(la) afiliado(a) acredita un total de {semanas_input} semanas cotizadas al Sistema General de Pensiones, cumpliendo con el requisito de densidad exigido.
-
-Que en cumplimiento del artículo 21 de la Ley 100 de 1993, se determinó el Ingreso Base de Liquidación (IBL) en la suma de ${ibl_input:,.2f} COP.
-
-LIQUIDACIÓN DE LA TASA DE REEMPLAZO:
-1. Proporción del IBL respecto al salario mínimo: {s:.2f} SMMLV.
-2. Porcentaje Inicial: {p_base:.2f}%.
-3. Puntos adicionales ({grupos} grupos de 50 semanas extra): {p_add:.2f}%.
-4. Tasa de Reemplazo Definitiva: {t_final:.2f}%.
-
-En consecuencia, el valor de la mesada pensional corresponderá al {t_final:.2f}% del IBL, quedando sujeta a los descuentos de Ley en materia de salud con cargo al pensionado (Art. 143 Ley 100 de 1993 y Art. 1 Ley 2018 de 2020).
-"""
+    if st.button("⚖️ Generar Análisis y Motivación Jurídica (LangChain)", type="primary", use_container_width=True):
+        if not api_key:
+            st.warning("⚠️ Requiere el Token de HuggingFace en la barra lateral para redactar el documento.")
         else:
-            st.error("🔴 ESTADO: NO CUMPLE REQUISITOS. Generando acto denegatorio en lenguaje claro.")
-            faltante_semanas = 1300 - semanas_input if not cumple_semanas else 0
-            
-            texto_edad = f"Actualmente, usted tiene {edad_input} años. Como la ley exige {edad_requerida} años para su género, usted **{'sí' if cumple_edad else 'aún no'}** cumple este requisito."
-            texto_semanas = f"Usted cuenta con {semanas_input} semanas cotizadas. Le hacen falta {faltante_semanas} semanas para cumplir la meta de 1.300." if not cumple_semanas else f"Usted cuenta con {semanas_input} semanas cotizadas, cumpliendo este requisito."
-            
-            motivacion = f"""CONSIDERANDO:
+            with st.spinner("La IA está redactando la motivación basándose en las Reglas de Colpensiones..."):
+                # Ejecutar cálculo de reglas duro (Python)
+                calculos = calcular_derecho_pensional(
+                    st.session_state.edad, st.session_state.semanas, 
+                    st.session_state.genero, st.session_state.ibl, st.session_state.smmlv
+                )
+                
+                # Ejecutar redacción (LLM)
+                datos_sol = {
+                    "nombre": st.session_state.nombre,
+                    "cedula": st.session_state.cedula,
+                    "genero": st.session_state.genero,
+                    "edad": st.session_state.edad,
+                    "semanas": st.session_state.semanas,
+                    "ibl": st.session_state.ibl
+                }
+                
+                try:
+                    resultado_ia = redactar_acto_langchain(datos_sol, calculos, api_key)
+                    st.session_state.motivacion_generada = resultado_ia
+                except Exception as e:
+                    st.error(f"Error en la IA: {e}")
 
-Para nuestra entidad es fundamental brindarle total claridad sobre su situación pensional. Hemos revisado detalladamente su historia laboral para determinar si en este momento es posible reconocer su pensión de vejez.
-
-De acuerdo con la Ley 797 de 2003, para acceder a la pensión de vejez se debe cumplir con dos condiciones al mismo tiempo:
-1. Tener la edad requerida ({edad_requerida} años).
-2. Haber cotizado un mínimo de 1.300 semanas.
-
-Su situación actual tras la auditoría de sus documentos es la siguiente:
-- Requisito de Edad: {texto_edad}
-- Requisito de Semanas: {texto_semanas}
-
-Al no reunirse la totalidad de los requisitos de forma simultánea, nos resulta jurídicamente imposible aprobar su pensión de vejez en este instante. 
-
-Alternativas:
-{'1. Puede continuar cotizando al sistema hasta completar las semanas faltantes.' if not cumple_semanas else ''}
-2. Solicitar la Indemnización Sustitutiva de Vejez: Si declara su imposibilidad de seguir cotizando, y teniendo en cuenta su edad, tiene derecho a solicitar la devolución de sus aportes (Art. 37 de la Ley 100 de 1993).
-
-Por lo expuesto, se hace necesario negar el reconocimiento de la pensión de vejez en esta oportunidad.
-"""
+    if st.session_state.motivacion_generada:
+        st.text_area("Vista previa de la Resolución:", st.session_state.motivacion_generada, height=350)
         
-        st.text_area("Vista previa del Acto Administrativo:", motivacion, height=350)
-        word_file = generar_word(motivacion)
+        doc_word = generar_word(st.session_state.motivacion_generada)
         st.download_button(
             label="📄 Descargar Motivación en Word (.docx)",
-            data=word_file,
-            file_name="Proyecto_Resolucion.docx",
+            data=doc_word,
+            file_name=f"Resolucion_{st.session_state.cedula}.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             use_container_width=True
         )
