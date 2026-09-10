@@ -17,34 +17,35 @@ if 'edad' not in st.session_state: st.session_state.edad = 0
 if 'texto_documento' not in st.session_state: st.session_state.texto_documento = ""
 if 'datos_capturados' not in st.session_state: st.session_state.datos_capturados = False
 
-st.title("⚖️ Agente Sustanciador - Análisis Multinorma (Resoluciones e Historia Laboral)")
-st.markdown("Extrae datos automáticamente de Historias Laborales y Resoluciones, mostrándolos en un panel de verificación antes de proyectar el acto administrativo.")
+st.title("⚖️ Agente Sustanciador - Análisis Multinorma")
+st.markdown("Carga **múltiples archivos al mismo tiempo** (Historia Laboral, Resoluciones, Peticiones). El agente consolidará la información para extraer los datos clave.")
 
-# --- FUNCIONES DE LECTURA DE ARCHIVOS ---
-def leer_archivo(archivo):
-    texto = ""
-    try:
-        if archivo.name.endswith('.pdf'):
-            lector = PyPDF2.PdfReader(archivo)
-            for pagina in lector.pages:
-                if pagina.extract_text():
-                    texto += pagina.extract_text() + "\n"
-        elif archivo.name.endswith('.docx'):
-            doc = Document(archivo)
-            for parrafo in doc.paragraphs:
-                texto += parrafo.text + "\n"
-        elif archivo.name.endswith('.txt'):
-            texto = archivo.read().decode('utf-8')
-    except Exception as e:
-        st.error(f"Error al leer el archivo: {e}")
-    return texto
+# --- FUNCIONES DE LECTURA DE MÚLTIPLES ARCHIVOS ---
+def leer_multiples_archivos(lista_archivos):
+    texto_total = ""
+    for archivo in lista_archivos:
+        texto_total += f"\n\n--- INICIO DOCUMENTO: {archivo.name} ---\n\n"
+        try:
+            if archivo.name.endswith('.pdf'):
+                lector = PyPDF2.PdfReader(archivo)
+                for pagina in lector.pages:
+                    if pagina.extract_text():
+                        texto_total += pagina.extract_text() + "\n"
+            elif archivo.name.endswith('.docx'):
+                doc = Document(archivo)
+                for parrafo in doc.paragraphs:
+                    texto_total += parrafo.text + "\n"
+            elif archivo.name.endswith('.txt'):
+                texto_total += archivo.read().decode('utf-8') + "\n"
+        except Exception as e:
+            st.error(f"Error al leer el archivo {archivo.name}: {e}")
+    return texto_total
 
 # --- FUNCIÓN DE EXTRACCIÓN AVANZADA (REGEX) ---
 def extraer_datos_locales(texto):
     datos = {"semanas": 0, "ibl": 0.0, "edad": 0}
     
-    # 1. Extraer Semanas (Prioriza Historia Laboral, luego Resoluciones)
-    # Busca "TOTAL SEMANAS COTIZADAS: 1.385,14" 
+    # 1. Extraer Semanas (Prioriza Historia Laboral)
     match_hl = re.search(r'TOTAL SEMANAS COTIZADAS[\s:]*([\d.,]+)', texto, re.IGNORECASE)
     if match_hl:
         num_limpio = match_hl.group(1).replace('.', '').replace(',', '.')
@@ -105,14 +106,24 @@ col_izq, col_der = st.columns([1, 1.2])
 
 with col_izq:
     st.subheader("📄 1. Análisis de Expediente")
-    archivo_cargado = st.file_uploader("Adjuntar Historia Laboral o Resolución (PDF, Word, TXT)", type=["pdf", "docx", "txt"])
     
-    if archivo_cargado is not None:
+    # SE HABILITA LA CARGA MÚLTIPLE DE ARCHIVOS
+    archivos_cargados = st.file_uploader(
+        "Adjuntar expedientes (PDF, Word, TXT)", 
+        type=["pdf", "docx", "txt"], 
+        accept_multiple_files=True
+    )
+    
+    if archivos_cargados:
         if st.button("🔍 Extraer y Mostrar Datos", use_container_width=True):
-            with st.spinner('Procesando documento y aplicando reglas de extracción...'):
-                texto_peticion = leer_archivo(archivo_cargado)
-                st.session_state.texto_documento = texto_peticion
-                datos = extraer_datos_locales(texto_peticion)
+            with st.spinner(f'Procesando {len(archivos_cargados)} documento(s)...'):
+                
+                # Leer todos los archivos juntos
+                texto_consolidado = leer_multiples_archivos(archivos_cargados)
+                st.session_state.texto_documento = texto_consolidado
+                
+                # Ejecutar el motor de extracción sobre el texto combinado
+                datos = extraer_datos_locales(texto_consolidado)
                 
                 # Guardar en sesión
                 st.session_state.semanas = datos["semanas"]
@@ -121,20 +132,19 @@ with col_izq:
                 st.session_state.datos_capturados = True
                 
     if st.session_state.datos_capturados:
-        st.success("✅ Lectura Finalizada. Verifique los datos encontrados:")
-        # Panel visual de datos capturados
+        st.success("✅ Lectura Finalizada. Verifique los datos consolidados:")
         c1, c2, c3 = st.columns(3)
         c1.metric("Semanas Encontradas", f"{st.session_state.semanas}")
         c2.metric("IBL Encontrado", f"${st.session_state.ibl:,.0f}")
         c3.metric("Edad Calculada", f"{st.session_state.edad} años")
                 
     if st.session_state.texto_documento:
-        with st.expander("Ver texto plano del documento", expanded=False):
+        with st.expander("Ver texto consolidado de los documentos", expanded=False):
             st.text_area("Texto extraído:", st.session_state.texto_documento, height=250)
 
 with col_der:
     st.subheader("⚙️ 2. Variables y Decisión")
-    st.info("Puede ajustar manualmente los datos extraídos si el documento original presentaba errores de formato.")
+    st.info("Ajuste manualmente los datos si la lectura requiere precisión adicional.")
     
     col_a, col_b = st.columns(2)
     with col_a:
