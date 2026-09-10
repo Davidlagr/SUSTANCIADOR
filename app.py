@@ -6,9 +6,8 @@ import PyPDF2
 from datetime import datetime
 import re
 
-# LangChain Imports
-from langchain_huggingface import HuggingFaceEndpoint
-from langchain_core.prompts import PromptTemplate
+# Hugging Face Native Client (Soporta API Conversacional de forma nativa)
+from huggingface_hub import InferenceClient
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Agente Sustanciador Híbrido", layout="wide")
@@ -27,7 +26,7 @@ if 'smmlv' not in st.session_state or st.session_state.smmlv == 0: st.session_st
 if 'genero' not in st.session_state or st.session_state.genero == 0: st.session_state.genero = "Femenino"
 
 st.title("⚖️ Agente Sustanciador - Arquitectura Híbrida")
-st.markdown("1. Extracción gratuita omnidireccional. | 2. Cálculos matemáticos. | 3. Redacción jurídica (LangChain optimizado).")
+st.markdown("1. Extracción gratuita omnidireccional. | 2. Cálculos matemáticos. | 3. Redacción jurídica (Hugging Face Conversacional).")
 
 # --- 1. MÓDULO DE LECTURA Y EXTRACCIÓN UNIFICADA (TOKEN-FREE) ---
 def extraer_texto(archivo):
@@ -90,7 +89,7 @@ def extraer_datos_consolidados(texto):
             num = match_sem_res.group(1).replace(',', '').replace('.', '')
             if num.isdigit(): st.session_state.semanas = int(num)
             
-    # 6. Buscar IBL (Evita capturar la mesada)
+    # 6. Buscar IBL
     match_ibl = re.search(r'(?:IBL|Ingreso [B|b]ase de [L|l]iquidación)[^\$]*\$?\s*([\d.,]{6,})', texto)
     if match_ibl:
         num = match_ibl.group(1).replace(',', '').replace('.', '')
@@ -122,67 +121,51 @@ def calcular_derecho_pensional(edad, semanas, genero, ibl, smmlv):
         "mesada": mesada_calculada
     }
 
-# --- 3. ANÁLISIS A FONDO Y REDACCIÓN VÍA LANGCHAIN (CONSUME TOKENS) ---
-def redactar_acto_langchain(datos_solicitante, calculos, api_key):
+# --- 3. ANÁLISIS A FONDO Y REDACCIÓN VÍA IA CONVERSACIONAL ---
+def redactar_acto_ia(datos_solicitante, calculos, api_key):
     try:
-        # Modelo cambiado a Zephyr-7B-beta: Excelente para redacción, estable y admite text-generation
-        llm = HuggingFaceEndpoint(
-            repo_id="HuggingFaceH4/zephyr-7b-beta",
-            huggingfacehub_api_token=api_key,
-            temperature=0.2,
-            max_new_tokens=1024,
-            timeout=120
-        )
+        # Se instancia el cliente directo (evitando las restricciones de LangChain)
+        cliente = InferenceClient(model="mistralai/Mistral-7B-Instruct-v0.3", token=api_key)
         
-        # Plantilla optimizada para el formato exacto que exige Zephyr
-        plantilla = """<|system|>
-Eres un sustanciador experto de Colpensiones. Redacta la sección "CONSIDERANDO" de una resolución administrativa en Colombia (Ley 100 de 1993 y Ley 797 de 2003). 
-
+        # Formato de Mensajes (Rol System y Rol User) exigido por la API Conversacional
+        mensajes = [
+            {
+                "role": "system",
+                "content": """Eres un sustanciador experto de Colpensiones. Redacta la sección "CONSIDERANDO" de una resolución administrativa en Colombia (Ley 100 de 1993 y Ley 797 de 2003).
 REGLAS ESTRICTAS DE REDACCIÓN:
-- Inicia directamente con el texto legal. No saludes ni hagas introducciones.
+- Inicia directamente con el texto legal. No saludes.
 - Si cumple el derecho, fundamenta el reconocimiento, detalla el cálculo de la tasa de reemplazo y menciona el descuento de salud aplicable.
-- Si NO cumple el derecho, redacta una negativa empática, explicando claramente cuántas semanas le faltan y mencionando la alternativa de la Indemnización Sustitutiva de Vejez.
-</s>
-<|user|>
-DATOS DEL PETICIONARIO A INCLUIR:
-Nombre: {nombre}
-Cédula: {cedula}
-Género: {genero}
-Edad Actual: {edad} años
-Semanas Cotizadas Validadas: {semanas}
-IBL Calculado: ${ibl}
+- Si NO cumple el derecho, redacta una negativa empática, explicando claramente cuántas semanas le faltan y mencionando la alternativa de la Indemnización Sustitutiva de Vejez."""
+            },
+            {
+                "role": "user",
+                "content": f"""DATOS DEL PETICIONARIO A INCLUIR:
+Nombre: {datos_solicitante['nombre']}
+Cédula: {datos_solicitante['cedula']}
+Género: {datos_solicitante['genero']}
+Edad Actual: {datos_solicitante['edad']} años
+Semanas Cotizadas Validadas: {datos_solicitante['semanas']}
+IBL Calculado: ${datos_solicitante['ibl']:,.0f}
 
 RESULTADO DEL ANÁLISIS TÉCNICO (OBLIGATORIO APLICAR):
-¿Cumple el derecho?: {cumple_derecho}
-Semanas faltantes: {faltante_semanas}
-Tasa de Reemplazo Final: {tasa_final}%
-Descuento de Salud aplicable: {desc_salud}
-</s>
-<|assistant|>"""
+¿Cumple el derecho?: {"SÍ" if calculos['cumple_derecho'] else "NO"}
+Semanas faltantes: {calculos['faltante_semanas']}
+Tasa de Reemplazo Final: {calculos['tasa_final']:.2f}%
+Descuento de Salud aplicable: {calculos['desc_salud']}"""
+            }
+        ]
         
-        prompt = PromptTemplate(
-            template=plantilla,
-            input_variables=["nombre", "cedula", "genero", "edad", "semanas", "ibl", "cumple_derecho", "faltante_semanas", "tasa_final", "desc_salud"]
+        # Llamada a la API conversacional gratuita
+        respuesta = cliente.chat_completion(
+            messages=mensajes,
+            max_tokens=1024,
+            temperature=0.2
         )
         
-        cadena = prompt | llm
+        return respuesta.choices[0].message.content
         
-        parametros = {
-            "nombre": datos_solicitante['nombre'],
-            "cedula": datos_solicitante['cedula'],
-            "genero": datos_solicitante['genero'],
-            "edad": str(datos_solicitante['edad']),
-            "semanas": str(datos_solicitante['semanas']),
-            "ibl": f"{datos_solicitante['ibl']:,.0f}",
-            "cumple_derecho": "SÍ" if calculos['cumple_derecho'] else "NO",
-            "faltante_semanas": str(calculos['faltante_semanas']),
-            "tasa_final": f"{calculos['tasa_final']:.2f}",
-            "desc_salud": calculos['desc_salud']
-        }
-        
-        return cadena.invoke(parametros)
     except Exception as e:
-        raise Exception(f"Fallo de conexión con el modelo (HuggingFace API). Detalle técnico: {str(e)}")
+        raise Exception(f"Fallo de conexión con el modelo (API Conversacional). Detalle técnico: {str(e)}")
 
 def generar_word(texto_motivacion):
     doc = Document()
@@ -247,7 +230,7 @@ with col2:
         
     st.divider()
     
-    if st.button("⚖️ Generar Análisis y Motivación Jurídica (LangChain)", type="primary", use_container_width=True):
+    if st.button("⚖️ Generar Análisis y Motivación Jurídica (IA)", type="primary", use_container_width=True):
         with st.spinner("La IA está redactando la motivación basándose en las Reglas de Colpensiones..."):
             calculos = calcular_derecho_pensional(
                 st.session_state.edad, st.session_state.semanas, 
@@ -264,7 +247,8 @@ with col2:
             }
             
             try:
-                resultado_ia = redactar_acto_langchain(datos_sol, calculos, HF_TOKEN)
+                # Se envía a la función que usa InferenceClient
+                resultado_ia = redactar_acto_ia(datos_sol, calculos, HF_TOKEN)
                 st.session_state.motivacion_generada = resultado_ia
             except Exception as e:
                 st.error(str(e))
