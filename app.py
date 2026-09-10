@@ -12,14 +12,11 @@ from huggingface_hub import InferenceClient
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Agente Sustanciador Híbrido", layout="wide")
 
-# --- TOKEN INTEGRADO ---
-HF_TOKEN = "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"
-
 # Inicialización de estado
-vars_keys = ['nombre', 'cedula', 'ibl', 'smmlv', 'semanas', 'edad', 'genero', 'motivacion_generada']
+vars_keys = ['nombre', 'cedula', 'ibl', 'smmlv', 'semanas', 'edad', 'genero', 'motivacion_generada', 'hf_token']
 for key in vars_keys:
     if key not in st.session_state:
-        st.session_state[key] = "" if key in ['nombre', 'cedula', 'motivacion_generada'] else 0
+        st.session_state[key] = "" if key in ['nombre', 'cedula', 'motivacion_generada', 'hf_token'] else 0
 
 if 'ibl' not in st.session_state or st.session_state.ibl == 0: st.session_state.ibl = 1500000.0
 if 'smmlv' not in st.session_state or st.session_state.smmlv == 0: st.session_state.smmlv = 1300000.0
@@ -124,10 +121,8 @@ def calcular_derecho_pensional(edad, semanas, genero, ibl, smmlv):
 # --- 3. ANÁLISIS A FONDO Y REDACCIÓN VÍA IA CONVERSACIONAL ---
 def redactar_acto_ia(datos_solicitante, calculos, api_key):
     try:
-        # Se instancia el cliente directo (evitando las restricciones de LangChain)
         cliente = InferenceClient(model="mistralai/Mistral-7B-Instruct-v0.3", token=api_key)
         
-        # Formato de Mensajes (Rol System y Rol User) exigido por la API Conversacional
         mensajes = [
             {
                 "role": "system",
@@ -155,7 +150,6 @@ Descuento de Salud aplicable: {calculos['desc_salud']}"""
             }
         ]
         
-        # Llamada a la API conversacional gratuita
         respuesta = cliente.chat_completion(
             messages=mensajes,
             max_tokens=1024,
@@ -178,8 +172,20 @@ def generar_word(texto_motivacion):
     return buffer
 
 # --- INTERFAZ DE USUARIO ---
-st.sidebar.header("⚙️ Estado del Agente")
-st.sidebar.success("Conexión con Hugging Face Activa 🟢")
+st.sidebar.header("⚙️ Configuración del Agente")
+
+# Módulo de Token Manual
+token_input = st.sidebar.text_input("Hugging Face API Token:", type="password", help="Genera un token sin caducidad en Hugging Face y pégalo aquí.")
+
+if st.sidebar.button("Activar Token", use_container_width=True):
+    if token_input.strip():
+        st.session_state.hf_token = token_input.strip()
+        st.sidebar.success("✅ Token activado para esta sesión.")
+    else:
+        st.sidebar.error("⚠️ Ingrese un token válido.")
+
+if st.session_state.hf_token:
+    st.sidebar.info("Conexión con Hugging Face Activa 🟢")
 
 col1, col2 = st.columns([1, 1.2])
 
@@ -231,27 +237,29 @@ with col2:
     st.divider()
     
     if st.button("⚖️ Generar Análisis y Motivación Jurídica (IA)", type="primary", use_container_width=True):
-        with st.spinner("La IA está redactando la motivación basándose en las Reglas de Colpensiones..."):
-            calculos = calcular_derecho_pensional(
-                st.session_state.edad, st.session_state.semanas, 
-                st.session_state.genero, st.session_state.ibl, st.session_state.smmlv
-            )
-            
-            datos_sol = {
-                "nombre": st.session_state.nombre,
-                "cedula": st.session_state.cedula,
-                "genero": st.session_state.genero,
-                "edad": st.session_state.edad,
-                "semanas": st.session_state.semanas,
-                "ibl": st.session_state.ibl
-            }
-            
-            try:
-                # Se envía a la función que usa InferenceClient
-                resultado_ia = redactar_acto_ia(datos_sol, calculos, HF_TOKEN)
-                st.session_state.motivacion_generada = resultado_ia
-            except Exception as e:
-                st.error(str(e))
+        if not st.session_state.hf_token:
+            st.error("⚠️ Falta el Token. Por favor, ingresa y activa tu token de Hugging Face en el panel lateral.")
+        else:
+            with st.spinner("La IA está redactando la motivación basándose en las Reglas de Colpensiones..."):
+                calculos = calcular_derecho_pensional(
+                    st.session_state.edad, st.session_state.semanas, 
+                    st.session_state.genero, st.session_state.ibl, st.session_state.smmlv
+                )
+                
+                datos_sol = {
+                    "nombre": st.session_state.nombre,
+                    "cedula": st.session_state.cedula,
+                    "genero": st.session_state.genero,
+                    "edad": st.session_state.edad,
+                    "semanas": st.session_state.semanas,
+                    "ibl": st.session_state.ibl
+                }
+                
+                try:
+                    resultado_ia = redactar_acto_ia(datos_sol, calculos, st.session_state.hf_token)
+                    st.session_state.motivacion_generada = resultado_ia
+                except Exception as e:
+                    st.error(str(e))
 
     if st.session_state.motivacion_generada:
         st.text_area("Vista previa de la Resolución:", st.session_state.motivacion_generada, height=350)
