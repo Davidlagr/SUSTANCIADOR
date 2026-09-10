@@ -3,68 +3,57 @@ from docx import Document
 from io import BytesIO
 import math
 import PyPDF2
-import json
 import re
-from huggingface_hub import InferenceClient
 
-# --- CONFIGURACIÓN DE PÁGINA Y ESTADOS ---
-st.set_page_config(page_title="Agente Sustanciador - RPM (Open Source)", layout="wide")
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Agente Sustanciador RPM (Autónomo)", layout="wide")
 
 if 'ibl' not in st.session_state: st.session_state.ibl = 1500000.0
 if 'smmlv' not in st.session_state: st.session_state.smmlv = 1300000.0
 if 'semanas' not in st.session_state: st.session_state.semanas = 1300
-if 'resumen_peticion' not in st.session_state: st.session_state.resumen_peticion = ""
+if 'texto_documento' not in st.session_state: st.session_state.texto_documento = ""
 
-st.title("⚖️ Agente Sustanciador Inteligente - RPM")
-st.markdown("Carga la petición del ciudadano. El agente (potenciado por IA Open Source) extraerá las variables y proyectará la motivación jurídica.")
+st.title("⚖️ Agente Sustanciador - RPM (Versión Autónoma)")
+st.markdown("Herramienta gratuita y privada. Carga el documento, el sistema extraerá el texto, buscará los datos clave mediante patrones y proyectará la motivación jurídica sin usar APIs externas.")
 
 # --- FUNCIONES DE LECTURA DE ARCHIVOS ---
 def leer_archivo(archivo):
     texto = ""
-    if archivo.name.endswith('.pdf'):
-        lector = PyPDF2.PdfReader(archivo)
-        for pagina in lector.pages:
-            texto += pagina.extract_text() + "\n"
-    elif archivo.name.endswith('.docx'):
-        doc = Document(archivo)
-        for parrafo in doc.paragraphs:
-            texto += parrafo.text + "\n"
-    elif archivo.name.endswith('.txt'):
-        texto = archivo.read().decode('utf-8')
+    try:
+        if archivo.name.endswith('.pdf'):
+            lector = PyPDF2.PdfReader(archivo)
+            for pagina in lector.pages:
+                texto += pagina.extract_text() + "\n"
+        elif archivo.name.endswith('.docx'):
+            doc = Document(archivo)
+            for parrafo in doc.paragraphs:
+                texto += parrafo.text + "\n"
+        elif archivo.name.endswith('.txt'):
+            texto = archivo.read().decode('utf-8')
+    except Exception as e:
+        st.error(f"Error al leer el archivo: {e}")
     return texto
 
-# --- FUNCIÓN DE INTERPRETACIÓN CON IA OPEN SOURCE (Hugging Face) ---
-def analizar_texto_peticion(texto, api_key):
-    # Utilizamos Mixtral-8x7B, un modelo de código abierto de alto rendimiento
-    cliente = InferenceClient(model="mistralai/Mixtral-8x7B-Instruct-v0.1", token=api_key)
+# --- FUNCIÓN DE EXTRACCIÓN MEDIANTE PATRONES (REGEX) ---
+def extraer_datos_locales(texto):
+    datos = {"semanas": 1300, "ibl": 1500000.0}
     
-    # El prompt usa las etiquetas [INST] recomendadas para modelos Mistral/Mixtral
-    prompt = f"""[INST] Eres un sustanciador experto en pensiones. Lee la siguiente petición de un ciudadano.
-    Extrae estrictamente los siguientes datos en formato JSON. Si no encuentras un dato exacto, estima el más lógico según el texto. 
-    Tu respuesta debe ser ÚNICA Y EXCLUSIVAMENTE el JSON, sin texto de introducción ni conclusiones.
-    
-    Formato JSON requerido:
-    {{
-        "semanas_cotizadas": <int>,
-        "ingreso_base_liquidacion_ibl": <float>,
-        "smmlv_ano_causacion": <float>,
-        "resumen_hechos": "<Breve resumen de lo que pide en 2 lineas>"
-    }}
-    
-    Petición del ciudadano:
-    {texto}
-    [/INST]"""
-    
-    # Generar la respuesta limitando la temperatura para respuestas más precisas y predecibles
-    respuesta = cliente.text_generation(prompt, max_new_tokens=500, temperature=0.1)
-    
-    # Expresión regular para "atrapar" solo el JSON, en caso de que el modelo hable texto adicional
-    match = re.search(r'\{.*\}', respuesta, re.DOTALL)
-    if match:
-        texto_json = match.group(0)
-        return json.loads(texto_json)
-    else:
-        raise ValueError("El modelo no devolvió un formato JSON válido.")
+    # Buscar patrones de semanas (ej. "1350 semanas", "1.420 semanas", "1,200 semanas")
+    match_semanas = re.search(r'((?:\d{1,3}[.,]?\d{3})|\d{3,4})\s*semanas', texto, re.IGNORECASE)
+    if match_semanas:
+        # Limpiar puntos y comas del número encontrado
+        num_limpio = re.sub(r'[.,]', '', match_semanas.group(1))
+        if num_limpio.isdigit():
+            datos["semanas"] = int(num_limpio)
+            
+    # Buscar patrones que parezcan un IBL (ej. "$ 1.500.000", "IBL de 2.300.000")
+    match_ibl = re.search(r'(?:IBL|ingreso base|promedio).*?\$?\s*((?:\d{1,3}[.,]?)+(?:\d{3}))', texto, re.IGNORECASE)
+    if match_ibl:
+        num_limpio = re.sub(r'[.,]', '', match_ibl.group(1))
+        if num_limpio.isdigit():
+            datos["ibl"] = float(num_limpio)
+            
+    return datos
 
 # --- FUNCIONES DE CÁLCULO ---
 def calcular_tasa_reemplazo(ibl, smmlv, semanas_totales):
@@ -89,59 +78,44 @@ def generar_word(texto_motivacion):
     return buffer
 
 # --- INTERFAZ DE USUARIO ---
-st.sidebar.header("⚙️ Configuración del Agente")
-api_key = st.sidebar.text_input("Hugging Face API Token:", type="password", help="Genera un token gratuito en huggingface.co/settings/tokens")
+col_izq, col_der = st.columns([1, 1])
 
-# 1. ZONA DE CARGA DE DOCUMENTOS
-st.subheader("1. Análisis de Petición")
-archivo_cargado = st.file_uploader("Adjuntar solicitud del peticionario (PDF, Word, TXT)", type=["pdf", "docx", "txt"])
+with col_izq:
+    st.subheader("📄 1. Análisis de Expediente")
+    archivo_cargado = st.file_uploader("Adjuntar petición (PDF, Word, TXT)", type=["pdf", "docx", "txt"])
+    
+    if archivo_cargado is not None:
+        if st.button("🔍 Extraer Datos Localmente"):
+            with st.spinner('Extrayendo texto y buscando variables...'):
+                texto_peticion = leer_archivo(archivo_cargado)
+                st.session_state.texto_documento = texto_peticion
+                
+                # Ejecutar motor de reglas
+                datos = extraer_datos_locales(texto_peticion)
+                st.session_state.semanas = datos["semanas"]
+                st.session_state.ibl = datos["ibl"]
+                st.success("Extracción completada. Revisa los datos en el panel derecho.")
+                
+    if st.session_state.texto_documento:
+        with st.expander("Ver texto extraído del documento", expanded=True):
+            st.text_area("Texto sin formato:", st.session_state.texto_documento, height=300)
 
-if archivo_cargado is not None:
-    if st.button("🧠 Leer e Interpretar Petición"):
-        if not api_key:
-            st.warning("⚠️ Ingresa el Token de Hugging Face en el menú lateral.")
-        else:
-            with st.spinner('El agente está leyendo el documento con IA Open Source...'):
-                try:
-                    texto_peticion = leer_archivo(archivo_cargado)
-                    datos_extraidos = analizar_texto_peticion(texto_peticion, api_key)
-                    
-                    st.session_state.ibl = float(datos_extraidos.get("ingreso_base_liquidacion_ibl", 1500000.0))
-                    st.session_state.smmlv = float(datos_extraidos.get("smmlv_ano_causacion", 1300000.0))
-                    st.session_state.semanas = int(datos_extraidos.get("semanas_cotizadas", 1300))
-                    st.session_state.resumen_peticion = datos_extraidos.get("resumen_hechos", "")
-                    
-                    st.success("Lectura completada. Datos precargados en el formulario.")
-                    if st.session_state.resumen_peticion:
-                        st.info(f"**Resumen interpretado:** {st.session_state.resumen_peticion}")
-                        
-                except Exception as e:
-                    st.error(f"Error al procesar el documento. Asegúrate de que el Token sea correcto. Detalles: {e}")
-
-st.divider()
-
-# 2. ZONA DE EDICIÓN Y LIQUIDACIÓN
-st.subheader("2. Variables de Liquidación (Editables)")
-col1, col2, col3 = st.columns(3)
-with col1:
+with col_der:
+    st.subheader("⚙️ 2. Liquidación y Formulación")
+    st.info("Verifica y ajusta las variables extraídas antes de generar el acto.")
+    
     ibl_input = st.number_input("Ingreso Base de Liquidación (IBL):", min_value=0.0, value=st.session_state.ibl, step=100000.0)
-with col2:
     smmlv_input = st.number_input("SMMLV del año de causación:", min_value=0.0, value=st.session_state.smmlv, step=10000.0)
-with col3:
     semanas_input = st.number_input("Total Semanas Cotizadas:", min_value=0, value=st.session_state.semanas, step=1)
-
-st.divider()
-
-# 3. ZONA DE GENERACIÓN DE MOTIVACIÓN
-st.subheader("3. Generación de Acto Administrativo")
-if st.button("⚖️ Proyectar Motivación Jurídica"):
-    s, p_base, grupos, p_add, t_final = calcular_tasa_reemplazo(ibl_input, smmlv_input, semanas_input)
     
-    texto_resumen = f"Que al revisar la petición allegada, se advierte que el objeto central de la solicitud radica en: {st.session_state.resumen_peticion}\n\n" if st.session_state.resumen_peticion else ""
+    st.divider()
     
-    motivacion = f"""CONSIDERANDO:
+    if st.button("⚖️ Proyectar Motivación Jurídica", use_container_width=True):
+        s, p_base, grupos, p_add, t_final = calcular_tasa_reemplazo(ibl_input, smmlv_input, semanas_input)
+        
+        motivacion = f"""CONSIDERANDO:
 
-{texto_resumen}Que de conformidad con el artículo 33 de la Ley 100 de 1993, modificado por el artículo 9 de la Ley 797 de 2003, para tener derecho a la Pensión de Vejez es necesario acreditar las edades establecidas en la norma y un mínimo de 1.300 semanas de cotización.
+Que de conformidad con el artículo 33 de la Ley 100 de 1993, modificado por el artículo 9 de la Ley 797 de 2003, para tener derecho a la Pensión de Vejez es necesario acreditar las edades establecidas en la norma y un mínimo de 1.300 semanas de cotización.
 
 Que el(la) afiliado(a) acredita un total de {semanas_input} semanas cotizadas al Sistema General de Pensiones, contabilizadas de acuerdo con el Parágrafo 2 del artículo 33 de la Ley 100 de 1993, aplicando la regla de conversión de 51,42 semanas por año, cumpliendo con el requisito de densidad exigido.
 
@@ -167,15 +141,16 @@ Incremento adicional = {grupos} * 1.5% = {p_add:.2f}%.
 Sumando el porcentaje inicial ({p_base:.2f}%) y los puntos adicionales ({p_add:.2f}%), se establece una tasa de reemplazo total del {t_final:.2f}% (Aplicando el tope máximo normativo del 80%).
 
 DESCUENTOS DE LEY EN SALUD:
-En consecuencia, el valor de la mesada pensional corresponderá al {t_final:.2f}% del IBL, quedando sujeta a los descuentos de Ley en materia de salud con cargo al pensionado (Art. 143 Ley 100 de 1993). Dado el monto liquidado, se aplicará el porcentaje de descuento conforme a lo regulado en el Artículo 1 de la Ley 2018 de 2020.
+En consecuencia, el valor de la mesada pensional corresponderá al {t_final:.2f}% del IBL, quedando sujeta a los descuentos de Ley en materia de salud con cargo al pensionado (Art. 143 Ley 100 de 1993 y Art. 1 Ley 2018 de 2020).
 """
-    
-    st.text_area("Vista previa del Acto Administrativo:", motivacion, height=500)
-    
-    word_file = generar_word(motivacion)
-    st.download_button(
-        label="📄 Descargar Motivación en Word (.docx)",
-        data=word_file,
-        file_name="Resolucion_Motivada_RPM.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
+        
+        st.text_area("Vista previa del Acto Administrativo:", motivacion, height=400)
+        
+        word_file = generar_word(motivacion)
+        st.download_button(
+            label="📄 Descargar Motivación en Word (.docx)",
+            data=word_file,
+            file_name="Resolucion_Motivada_RPM.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True
+        )
