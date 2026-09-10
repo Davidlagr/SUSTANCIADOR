@@ -4,4 +4,3 @@ PyPDF2
 langchain
 langchain-huggingface
 langchain-core
-pydantic
