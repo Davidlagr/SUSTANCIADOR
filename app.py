@@ -3,13 +3,18 @@ from docx import Document
 from io import BytesIO
 import math
 import PyPDF2
-import re
 from datetime import datetime
+import json
+
+# LangChain Imports
+from langchain_huggingface import HuggingFaceEndpoint
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.pydantic_v1 import BaseModel, Field
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Agente Sustanciador RPM", layout="wide")
+st.set_page_config(page_title="Agente Sustanciador RPM - LangChain", layout="wide")
 
-# Inicializar estado de variables
 if 'ibl' not in st.session_state: st.session_state.ibl = 1500000.0
 if 'smmlv' not in st.session_state: st.session_state.smmlv = 1300000.0
 if 'semanas' not in st.session_state: st.session_state.semanas = 0
@@ -17,10 +22,10 @@ if 'edad' not in st.session_state: st.session_state.edad = 0
 if 'texto_documento' not in st.session_state: st.session_state.texto_documento = ""
 if 'datos_capturados' not in st.session_state: st.session_state.datos_capturados = False
 
-st.title("⚖️ Agente Sustanciador - Análisis Multinorma")
-st.markdown("Carga **múltiples archivos al mismo tiempo** (Historia Laboral, Resoluciones, Peticiones). El agente consolidará la información para extraer los datos clave.")
+st.title("⚖️ Agente Sustanciador - Motor LangChain")
+st.markdown("Análisis semántico avanzado de Historias Laborales y Resoluciones mediante cadenas de LangChain y parseo estructurado.")
 
-# --- FUNCIONES DE LECTURA DE MÚLTIPLES ARCHIVOS ---
+# --- LECTURA DE MÚLTIPLES ARCHIVOS ---
 def leer_multiples_archivos(lista_archivos):
     texto_total = ""
     for archivo in lista_archivos:
@@ -41,45 +46,52 @@ def leer_multiples_archivos(lista_archivos):
             st.error(f"Error al leer el archivo {archivo.name}: {e}")
     return texto_total
 
-# --- FUNCIÓN DE EXTRACCIÓN AVANZADA (REGEX) ---
-def extraer_datos_locales(texto):
-    datos = {"semanas": 0, "ibl": 0.0, "edad": 0}
-    
-    # 1. Extraer Semanas (Prioriza Historia Laboral)
-    match_hl = re.search(r'TOTAL SEMANAS COTIZADAS[\s:]*([\d.,]+)', texto, re.IGNORECASE)
-    if match_hl:
-        num_limpio = match_hl.group(1).replace('.', '').replace(',', '.')
-        datos["semanas"] = int(float(num_limpio))
-    else:
-        # Busca en resoluciones: "1,424 semanas"
-        match_res = re.search(r'([\d.,]+)\s*semanas', texto, re.IGNORECASE)
-        if match_res:
-            num_limpio = match_res.group(1).replace(',', '').replace('.', '')
-            if num_limpio.isdigit(): datos["semanas"] = int(num_limpio)
-            
-    # 2. Extraer IBL (Busca patrones como "IBL:8,133,378" o "Liquidación de $8,133,378")
-    match_ibl = re.search(r'(?:IBL|Liquidación[\s\w]*de)[\s:\$]*([\d.,]{6,})', texto, re.IGNORECASE)
-    if match_ibl:
-        num_limpio = match_ibl.group(1).replace(',', '').replace('.', '')
-        if num_limpio.isdigit(): datos["ibl"] = float(num_limpio)
-            
-    # 3. Extraer Edad (Busca "67 años de edad" o calcula desde "Fecha de Nacimiento: 22/01/1974")
-    match_nacimiento = re.search(r'Nacimiento[\s:]*(\d{2}/\d{2}/\d{4})', texto, re.IGNORECASE)
-    if match_nacimiento:
-        try:
-            fecha_nac = datetime.strptime(match_nacimiento.group(1), '%d/%m/%Y')
-            edad_calculada = datetime.now().year - fecha_nac.year
-            datos["edad"] = edad_calculada
-        except:
-            pass
-    else:
-        match_edad = re.search(r'(?:edad\s*de\s*)?(\d{2})\s*años', texto, re.IGNORECASE)
-        if match_edad:
-            datos["edad"] = int(match_edad.group(1))
-            
-    return datos
+# --- ESTRUCTURA DE DATOS ESPERADA (PYDANTIC) ---
+class DatosPension(BaseModel):
+    semanas: int = Field(description="Total de semanas cotizadas encontradas en el documento")
+    ibl: float = Field(description="Ingreso Base de Liquidación (IBL) en formato numérico sin símbolos")
+    edad: int = Field(description="Edad del peticionario. Si hay fecha de nacimiento, calcular edad al año actual")
 
-# --- FUNCIONES DE CÁLCULO ---
+# --- CADENA DE ANÁLISIS LANGCHAIN ---
+def analizar_con_langchain(texto_documento, api_key):
+    # Inicializar el modelo Open Source (Mixtral)
+    llm = HuggingFaceEndpoint(
+        repo_id="mistralai/Mixtral-8x7B-Instruct-v0.1",
+        huggingfacehub_api_token=api_key,
+        temperature=0.1,
+        max_new_tokens=512
+    )
+    
+    # Configurar el Parser para asegurar salida JSON
+    parser = JsonOutputParser(pydantic_object=DatosPension)
+    
+    # Crear el Prompt Template con las instrucciones de formato inyectadas
+    prompt = PromptTemplate(
+        template="""Eres un experto jurídico analizando expedientes pensionales.
+        Extrae la siguiente información del documento proporcionado.
+        
+        {format_instructions}
+        
+        DOCUMENTO:
+        {texto}
+        """,
+        input_variables=["texto"],
+        partial_variables={"format_instructions": parser.get_format_instructions()},
+    )
+    
+    # Ensamblar la cadena (Chain)
+    cadena = prompt | llm | parser
+    
+    # Ejecutar la cadena
+    try:
+        # Limitamos el texto para no exceder la ventana de contexto del modelo si es muy largo
+        texto_truncado = texto_documento[:15000] 
+        resultado = cadena.invoke({"texto": texto_truncado})
+        return resultado
+    except Exception as e:
+        raise Exception(f"Fallo en la extracción de LangChain: {e}")
+
+# --- FUNCIONES DE CÁLCULO Y WORD ---
 def calcular_tasa_reemplazo(ibl, smmlv, semanas_totales):
     s = ibl / smmlv if smmlv > 0 else 0
     porcentaje_base = max(65.50 - (0.50 * s), 55.5)
@@ -89,7 +101,6 @@ def calcular_tasa_reemplazo(ibl, smmlv, semanas_totales):
     tasa_final = min(porcentaje_base + puntos_adicionales, 80.0)
     return s, porcentaje_base, grupos_de_50, puntos_adicionales, tasa_final
 
-# --- FUNCIÓN DE GENERACIÓN DE WORD ---
 def generar_word(texto_motivacion):
     doc = Document()
     doc.add_heading('MOTIVACIÓN DEL ACTO ADMINISTRATIVO', 0)
@@ -102,12 +113,14 @@ def generar_word(texto_motivacion):
     return buffer
 
 # --- INTERFAZ DE USUARIO ---
+st.sidebar.header("⚙️ Motor LangChain")
+api_key = st.sidebar.text_input("HuggingFace API Token:", type="password", help="Requerido para la inferencia semántica del LLM")
+
 col_izq, col_der = st.columns([1, 1.2])
 
 with col_izq:
     st.subheader("📄 1. Análisis de Expediente")
     
-    # SE HABILITA LA CARGA MÚLTIPLE DE ARCHIVOS
     archivos_cargados = st.file_uploader(
         "Adjuntar expedientes (PDF, Word, TXT)", 
         type=["pdf", "docx", "txt"], 
@@ -115,28 +128,30 @@ with col_izq:
     )
     
     if archivos_cargados:
-        if st.button("🔍 Extraer y Mostrar Datos", use_container_width=True):
-            with st.spinner(f'Procesando {len(archivos_cargados)} documento(s)...'):
-                
-                # Leer todos los archivos juntos
-                texto_consolidado = leer_multiples_archivos(archivos_cargados)
-                st.session_state.texto_documento = texto_consolidado
-                
-                # Ejecutar el motor de extracción sobre el texto combinado
-                datos = extraer_datos_locales(texto_consolidado)
-                
-                # Guardar en sesión
-                st.session_state.semanas = datos["semanas"]
-                st.session_state.ibl = datos["ibl"] if datos["ibl"] > 0 else 1500000.0
-                st.session_state.edad = datos["edad"] if datos["edad"] > 0 else 60
-                st.session_state.datos_capturados = True
+        if st.button("🧠 Ejecutar Cadena LangChain", use_container_width=True):
+            if not api_key:
+                st.warning("Ingrese su Token de HuggingFace en el panel lateral.")
+            else:
+                with st.spinner(f'Ejecuting LangChain Pipeline...'):
+                    texto_consolidado = leer_multiples_archivos(archivos_cargados)
+                    st.session_state.texto_documento = texto_consolidado
+                    
+                    try:
+                        datos = analizar_con_langchain(texto_consolidado, api_key)
+                        
+                        st.session_state.semanas = datos.get("semanas", 0)
+                        st.session_state.ibl = datos.get("ibl", 1500000.0)
+                        st.session_state.edad = datos.get("edad", 60)
+                        st.session_state.datos_capturados = True
+                        st.success("✅ Extracción Semántica Completada.")
+                    except Exception as e:
+                        st.error(str(e))
                 
     if st.session_state.datos_capturados:
-        st.success("✅ Lectura Finalizada. Verifique los datos consolidados:")
         c1, c2, c3 = st.columns(3)
-        c1.metric("Semanas Encontradas", f"{st.session_state.semanas}")
-        c2.metric("IBL Encontrado", f"${st.session_state.ibl:,.0f}")
-        c3.metric("Edad Calculada", f"{st.session_state.edad} años")
+        c1.metric("Semanas", f"{st.session_state.semanas}")
+        c2.metric("IBL", f"${st.session_state.ibl:,.0f}")
+        c3.metric("Edad", f"{st.session_state.edad} años")
                 
     if st.session_state.texto_documento:
         with st.expander("Ver texto consolidado de los documentos", expanded=False):
@@ -144,7 +159,6 @@ with col_izq:
 
 with col_der:
     st.subheader("⚙️ 2. Variables y Decisión")
-    st.info("Ajuste manualmente los datos si la lectura requiere precisión adicional.")
     
     col_a, col_b = st.columns(2)
     with col_a:
@@ -154,7 +168,7 @@ with col_der:
         semanas_input = st.number_input("Semanas a reconocer:", min_value=0, value=st.session_state.semanas, step=1)
         
     st.divider()
-    ibl_input = st.number_input("Ingreso Base de Liquidación (IBL):", min_value=0.0, value=st.session_state.ibl, step=10000.0)
+    ibl_input = st.number_input("Ingreso Base de Liquidación (IBL):", min_value=0.0, value=float(st.session_state.ibl), step=10000.0)
     smmlv_input = st.number_input("SMMLV aplicable:", min_value=0.0, value=st.session_state.smmlv, step=10000.0)
     
     st.divider()
