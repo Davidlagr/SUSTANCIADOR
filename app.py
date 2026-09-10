@@ -6,7 +6,7 @@ import PyPDF2
 from datetime import datetime
 import re
 
-# Hugging Face Native Client (Soporta API Conversacional de forma nativa)
+# Hugging Face Native Client
 from huggingface_hub import InferenceClient
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -121,7 +121,8 @@ def calcular_derecho_pensional(edad, semanas, genero, ibl, smmlv):
 # --- 3. ANÁLISIS A FONDO Y REDACCIÓN VÍA IA CONVERSACIONAL ---
 def redactar_acto_ia(datos_solicitante, calculos, api_key):
     try:
-        cliente = InferenceClient(model="mistralai/Mistral-7B-Instruct-v0.3", token=api_key)
+        # CAMBIO CLAVE: Usamos zephyr-7b-beta que SÍ soporta 'conversational' en la API gratuita
+        cliente = InferenceClient(model="HuggingFaceH4/zephyr-7b-beta", token=api_key)
         
         mensajes = [
             {
@@ -159,7 +160,7 @@ Descuento de Salud aplicable: {calculos['desc_salud']}"""
         return respuesta.choices[0].message.content
         
     except Exception as e:
-        raise Exception(f"Fallo de conexión con el modelo (API Conversacional). Detalle técnico: {str(e)}")
+        raise Exception(f"Fallo de conexión con el modelo. Detalle técnico: {str(e)}")
 
 def generar_word(texto_motivacion):
     doc = Document()
