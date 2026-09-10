@@ -13,6 +13,10 @@ from langchain_core.prompts import PromptTemplate
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Agente Sustanciador Híbrido", layout="wide")
 
+# --- TOKEN INTEGRADO ---
+# Reemplaza permanentemente la necesidad de ingresarlo en la interfaz
+HF_TOKEN = "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"
+
 # Inicialización de estado de variables extraídas (Token-Free)
 vars_keys = ['nombre', 'cedula', 'ibl', 'smmlv', 'semanas', 'edad', 'genero', 'motivacion_generada']
 for key in vars_keys:
@@ -175,8 +179,9 @@ def generar_word(texto_motivacion):
     return buffer
 
 # --- INTERFAZ DE USUARIO ---
-st.sidebar.header("⚙️ Análisis LangChain")
-api_key = st.sidebar.text_input("HuggingFace API Token:", type="password", help="Solo se utilizará para la redacción final, ahorrando tokens.")
+st.sidebar.header("⚙️ Estado del Agente")
+st.sidebar.success("Conexión con Hugging Face Activa 🟢")
+st.sidebar.info("El token ha sido integrado internamente para automatizar la redacción de los actos administrativos.")
 
 col1, col2 = st.columns([1, 1.2])
 
@@ -221,31 +226,29 @@ with col2:
     st.divider()
     
     if st.button("⚖️ Generar Análisis y Motivación Jurídica (LangChain)", type="primary", use_container_width=True):
-        if not api_key:
-            st.warning("⚠️ Requiere el Token de HuggingFace en la barra lateral para redactar el documento.")
-        else:
-            with st.spinner("La IA está redactando la motivación basándose en las Reglas de Colpensiones..."):
-                # Ejecutar cálculo de reglas duro (Python)
-                calculos = calcular_derecho_pensional(
-                    st.session_state.edad, st.session_state.semanas, 
-                    st.session_state.genero, st.session_state.ibl, st.session_state.smmlv
-                )
-                
-                # Ejecutar redacción (LLM)
-                datos_sol = {
-                    "nombre": st.session_state.nombre,
-                    "cedula": st.session_state.cedula,
-                    "genero": st.session_state.genero,
-                    "edad": st.session_state.edad,
-                    "semanas": st.session_state.semanas,
-                    "ibl": st.session_state.ibl
-                }
-                
-                try:
-                    resultado_ia = redactar_acto_langchain(datos_sol, calculos, api_key)
-                    st.session_state.motivacion_generada = resultado_ia
-                except Exception as e:
-                    st.error(f"Error en la IA: {e}")
+        with st.spinner("La IA está redactando la motivación basándose en las Reglas de Colpensiones..."):
+            # Ejecutar cálculo de reglas duro (Python)
+            calculos = calcular_derecho_pensional(
+                st.session_state.edad, st.session_state.semanas, 
+                st.session_state.genero, st.session_state.ibl, st.session_state.smmlv
+            )
+            
+            # Ejecutar redacción (LLM)
+            datos_sol = {
+                "nombre": st.session_state.nombre,
+                "cedula": st.session_state.cedula,
+                "genero": st.session_state.genero,
+                "edad": st.session_state.edad,
+                "semanas": st.session_state.semanas,
+                "ibl": st.session_state.ibl
+            }
+            
+            try:
+                # Utilizamos el token directamente desde la constante definida arriba
+                resultado_ia = redactar_acto_langchain(datos_sol, calculos, HF_TOKEN)
+                st.session_state.motivacion_generada = resultado_ia
+            except Exception as e:
+                st.error(f"Error en la IA: {e}")
 
     if st.session_state.motivacion_generada:
         st.text_area("Vista previa de la Resolución:", st.session_state.motivacion_generada, height=350)
