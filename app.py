@@ -125,36 +125,40 @@ def calcular_derecho_pensional(edad, semanas, genero, ibl, smmlv):
 # --- 3. ANÁLISIS A FONDO Y REDACCIÓN VÍA LANGCHAIN (CONSUME TOKENS) ---
 def redactar_acto_langchain(datos_solicitante, calculos, api_key):
     try:
-        # Modelo ajustado a Mistral-7B-v0.3 (Alta disponibilidad en API gratuita)
+        # Modelo cambiado a Zephyr-7B-beta: Excelente para redacción, estable y admite text-generation
         llm = HuggingFaceEndpoint(
-            repo_id="mistralai/Mistral-7B-Instruct-v0.3",
+            repo_id="HuggingFaceH4/zephyr-7b-beta",
             huggingfacehub_api_token=api_key,
             temperature=0.2,
             max_new_tokens=1024,
-            timeout=60
+            timeout=120
         )
         
-        plantilla = """[INST] Eres un sustanciador experto de Colpensiones. Redacta la sección "CONSIDERANDO" de una resolución administrativa en Colombia (Ley 100 de 1993 y Ley 797 de 2003). 
-        
-        REGLAS ESTRICTAS DE REDACCIÓN:
-        - Inicia directamente con el texto legal. No saludes.
-        - Si cumple el derecho, fundamenta el reconocimiento, detalla el cálculo de la tasa de reemplazo y menciona el descuento de salud aplicable.
-        - Si NO cumple el derecho, redacta una negativa empática, explicando claramente cuántas semanas le faltan y mencionando la alternativa de la Indemnización Sustitutiva de Vejez.
-        
-        DATOS DEL PETICIONARIO A INCLUIR:
-        Nombre: {nombre}
-        Cédula: {cedula}
-        Género: {genero}
-        Edad Actual: {edad} años
-        Semanas Cotizadas Validadas: {semanas}
-        IBL Calculado: ${ibl}
-        
-        RESULTADO DEL ANÁLISIS TÉCNICO (OBLIGATORIO APLICAR):
-        ¿Cumple el derecho?: {cumple_derecho}
-        Semanas faltantes: {faltante_semanas}
-        Tasa de Reemplazo Final: {tasa_final}%
-        Descuento de Salud aplicable: {desc_salud}
-        [/INST]"""
+        # Plantilla optimizada para el formato exacto que exige Zephyr
+        plantilla = """<|system|>
+Eres un sustanciador experto de Colpensiones. Redacta la sección "CONSIDERANDO" de una resolución administrativa en Colombia (Ley 100 de 1993 y Ley 797 de 2003). 
+
+REGLAS ESTRICTAS DE REDACCIÓN:
+- Inicia directamente con el texto legal. No saludes ni hagas introducciones.
+- Si cumple el derecho, fundamenta el reconocimiento, detalla el cálculo de la tasa de reemplazo y menciona el descuento de salud aplicable.
+- Si NO cumple el derecho, redacta una negativa empática, explicando claramente cuántas semanas le faltan y mencionando la alternativa de la Indemnización Sustitutiva de Vejez.
+</s>
+<|user|>
+DATOS DEL PETICIONARIO A INCLUIR:
+Nombre: {nombre}
+Cédula: {cedula}
+Género: {genero}
+Edad Actual: {edad} años
+Semanas Cotizadas Validadas: {semanas}
+IBL Calculado: ${ibl}
+
+RESULTADO DEL ANÁLISIS TÉCNICO (OBLIGATORIO APLICAR):
+¿Cumple el derecho?: {cumple_derecho}
+Semanas faltantes: {faltante_semanas}
+Tasa de Reemplazo Final: {tasa_final}%
+Descuento de Salud aplicable: {desc_salud}
+</s>
+<|assistant|>"""
         
         prompt = PromptTemplate(
             template=plantilla,
