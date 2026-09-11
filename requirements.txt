@@ -1,4 +1,6 @@
-streamlit
-python-docx
-PyPDF2
-huggingface_hub
+streamlit==1.31.0
+pandas==2.2.0
+numpy==1.26.4
+python-docx==1.1.0
+pdfplumber==0.10.3
+matplotlib==3.8.2
