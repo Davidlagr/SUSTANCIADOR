@@ -43,8 +43,6 @@ def extraer_texto(archivo):
     return texto
 
 def extraer_datos_consolidados(texto):
-    """Escanea el texto combinado de TODOS los documentos buscando variables clave."""
-    
     # 1. Buscar Cédula
     match_ced = re.search(r'(?:CC\s*No\.?|C\.C\.?|Documento)[:\s]*([\d.,]+)', texto, re.IGNORECASE)
     if match_ced:
@@ -54,8 +52,7 @@ def extraer_datos_consolidados(texto):
     match_nom = re.search(r'(?:señor(?:a)?|Nombre)[:\s]+([A-ZÑÁÉÍÓÚ\s]{5,})(?:,|-|\n|identificado)', texto)
     if match_nom:
         n = match_nom.group(1).strip()
-        if "DIRECCION" not in n.upper():
-            st.session_state.nombre = n
+        if "DIRECCION" not in n.upper(): st.session_state.nombre = n
             
     # 3. Determinar Género por contexto
     if re.search(r'\bseñora\b|\bmujer\b|\bfemenino\b', texto, re.IGNORECASE):
@@ -72,8 +69,7 @@ def extraer_datos_consolidados(texto):
         except: pass
     else:
         match_edad = re.search(r'(\d{2})\s*años', texto, re.IGNORECASE)
-        if match_edad:
-            st.session_state.edad = int(match_edad.group(1))
+        if match_edad: st.session_state.edad = int(match_edad.group(1))
 
     # 5. Buscar Semanas
     match_sem_hl = re.search(r'TOTAL SEMANAS COTIZADAS[\s:]*([\d.,]+)', texto, re.IGNORECASE)
@@ -92,12 +88,13 @@ def extraer_datos_consolidados(texto):
         num = match_ibl.group(1).replace(',', '').replace('.', '')
         if num.isdigit(): st.session_state.ibl = float(num)
 
-# --- 2. CÁLCULO MATEMÁTICO DE REGLAS (TOKEN-FREE) ---
+# --- 2. CÁLCULO MATEMÁTICO DE REGLAS (MODIFICADO PARA EXPLICAR LA FÓRMULA) ---
 def calcular_derecho_pensional(edad, semanas, genero, ibl, smmlv):
     edad_req = 57 if genero == "Femenino" else 62
     cumple_edad = edad >= edad_req
     cumple_semanas = semanas >= 1300
     
+    # Desglose matemático para enviarlo a la IA
     s = ibl / smmlv if smmlv > 0 else 0
     porcentaje_base = max(65.50 - (0.50 * s), 55.5)
     semanas_adicionales = max(0, semanas - 1300)
@@ -106,6 +103,7 @@ def calcular_derecho_pensional(edad, semanas, genero, ibl, smmlv):
     tasa_final = min(porcentaje_base + puntos_adicionales, 80.0) 
     
     mesada_calculada = ibl * (tasa_final / 100)
+    
     if mesada_calculada <= smmlv: desc_salud = "4%"
     elif mesada_calculada <= (smmlv * 2): desc_salud = "10%"
     else: desc_salud = "12%"
@@ -113,54 +111,71 @@ def calcular_derecho_pensional(edad, semanas, genero, ibl, smmlv):
     return {
         "cumple_derecho": cumple_edad and cumple_semanas,
         "faltante_semanas": 1300 - semanas if not cumple_semanas else 0,
+        "s_smmlv": s,
+        "porcentaje_base": porcentaje_base,
+        "grupos_de_50": grupos_de_50,
+        "puntos_adicionales": puntos_adicionales,
         "tasa_final": tasa_final,
         "desc_salud": desc_salud,
         "mesada": mesada_calculada
     }
 
-# --- 3. ANÁLISIS A FONDO Y REDACCIÓN VÍA IA CONVERSACIONAL ---
+# --- 3. ANÁLISIS A FONDO Y REDACCIÓN VÍA IA CONVERSACIONAL (PROMPT MEJORADO) ---
 def redactar_acto_ia(datos_solicitante, calculos, api_key):
     try:
-        # CAMBIO CLAVE: Usamos Qwen2.5-72B-Instruct. Es el modelo estrella soportado por la API gratuita actualmente.
         cliente = InferenceClient(model="Qwen/Qwen2.5-72B-Instruct", token=api_key)
         
+        # PROMPT DE DISEÑO LEGAL EXPLICATIVO
         mensajes = [
             {
                 "role": "system",
-                "content": """Eres un sustanciador experto de Colpensiones. Redacta la sección "CONSIDERANDO" de una resolución administrativa en Colombia (Ley 100 de 1993 y Ley 797 de 2003).
-REGLAS ESTRICTAS DE REDACCIÓN:
-- Inicia directamente con el texto legal. No saludes.
-- Si cumple el derecho, fundamenta el reconocimiento, detalla el cálculo de la tasa de reemplazo y menciona el descuento de salud aplicable.
-- Si NO cumple el derecho, redacta una negativa empática, explicando claramente cuántas semanas le faltan y mencionando la alternativa de la Indemnización Sustitutiva de Vejez."""
+                "content": """Eres un abogado sustanciador de Colpensiones experto en Legal Design. Redacta la sección "CONSIDERANDO" de una resolución administrativa en Colombia.
+Tu tono debe ser respetuoso, claro, jurídico y sumamente didáctico para que el ciudadano entienda perfectamente el origen de sus cálculos y no tenga dudas que motiven recursos de apelación.
+
+ESTRUCTURA OBLIGATORIA DEL DOCUMENTO:
+1. ANÁLISIS DE REQUISITOS: Cita los requisitos del Art. 33 de la Ley 100 de 1993 (modificado por Ley 797 de 2003) e indica claramente si el ciudadano los cumple.
+2. CÁLCULO DE LA TASA DE REEMPLAZO (Si cumple): Explica la fórmula del Art. 34 de la Ley 100 (modificado por Ley 797 de 2003). Desarrolla de forma pedagógica cómo el Ingreso Base de Liquidación (IBL) determina el "Porcentaje Base", y cómo las semanas adicionales a 1300 otorgan "Puntos Adicionales" (hasta el tope normativo).
+3. DESCUENTOS DE LEY EN SALUD: Explica obligatoriamente por qué se debe descontar salud, citando expresamente el Art. 143 de la Ley 100 de 1993, y justifica el porcentaje a descontar basándote en los rangos de la Ley 2018 de 2020.
+4. NEGATIVA Y ALTERNATIVA (Si NO cumple): Explica empáticamente cuántas semanas le faltan y menciona la opción de la Indemnización Sustitutiva de Vejez si no puede seguir cotizando.
+"""
             },
             {
                 "role": "user",
-                "content": f"""DATOS DEL PETICIONARIO A INCLUIR:
+                "content": f"""DATOS DEL PETICIONARIO:
 Nombre: {datos_solicitante['nombre']}
 Cédula: {datos_solicitante['cedula']}
 Género: {datos_solicitante['genero']}
-Edad Actual: {datos_solicitante['edad']} años
-Semanas Cotizadas Validadas: {datos_solicitante['semanas']}
-IBL Calculado: ${datos_solicitante['ibl']:,.0f}
+Edad: {datos_solicitante['edad']} años
+Semanas Cotizadas: {datos_solicitante['semanas']}
+IBL Calculado: ${datos_solicitante['ibl']:,.0f} COP
 
-RESULTADO DEL ANÁLISIS TÉCNICO (OBLIGATORIO APLICAR):
+CÁLCULOS MATEMÁTICOS PARA DESGLOSAR Y EXPLICAR EN EL TEXTO:
 ¿Cumple el derecho?: {"SÍ" if calculos['cumple_derecho'] else "NO"}
 Semanas faltantes: {calculos['faltante_semanas']}
-Tasa de Reemplazo Final: {calculos['tasa_final']:.2f}%
-Descuento de Salud aplicable: {calculos['desc_salud']}"""
+
+DESGLOSE DE FÓRMULA (Solo úsalo si cumple el derecho):
+- Proporción IBL vs Salario Mínimo (s): {calculos['s_smmlv']:.2f} salarios mínimos.
+- Porcentaje Base calculado: {calculos['porcentaje_base']:.2f}%
+- Grupos de 50 semanas adicionales a las 1300: {calculos['grupos_de_50']} grupos.
+- Puntos Adicionales ganados: {calculos['puntos_adicionales']:.2f}%
+- Tasa de Reemplazo Definitiva (Tope max 80%): {calculos['tasa_final']:.2f}%
+
+DESCUENTO A EXPLICAR:
+- Porcentaje a descontar en salud: {calculos['desc_salud']} (Justificar según valor final de la mesada)."""
             }
         ]
         
+        # Le permitimos más tokens (2048) para asegurar que el texto explicativo no se corte
         respuesta = cliente.chat_completion(
             messages=mensajes,
-            max_tokens=1024,
-            temperature=0.2
+            max_tokens=2048,
+            temperature=0.3
         )
         
         return respuesta.choices[0].message.content
         
     except Exception as e:
-        raise Exception(f"Fallo de conexión con el modelo (API Conversacional). Detalle técnico: {str(e)}")
+        raise Exception(f"Fallo de conexión con el modelo. Detalle técnico: {str(e)}")
 
 def generar_word(texto_motivacion):
     doc = Document()
@@ -175,7 +190,6 @@ def generar_word(texto_motivacion):
 # --- INTERFAZ DE USUARIO ---
 st.sidebar.header("⚙️ Configuración del Agente")
 
-# Módulo de Token Manual
 token_input = st.sidebar.text_input("Hugging Face API Token:", type="password", help="Pega tu token de Hugging Face aquí.")
 
 if st.sidebar.button("Activar Token", use_container_width=True):
