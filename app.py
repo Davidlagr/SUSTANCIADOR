@@ -6,7 +6,7 @@ from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-from data_processor import extraer_tabla_cruda, limpiar_y_estandarizar, aplicar_regla_simultaneidad, extraer_datos_basicos
+from data_processor import extraer_tabla_cruda, limpiar_y_estandarizar, aplicar_regla_simultaneidad, extraer_datos_basicos, extraer_datos_peticion
 from logic import LiquidadorPension
 
 st.set_page_config(page_title="Sustanciador Pro - Colpensiones", layout="wide", page_icon="⚖️")
@@ -14,12 +14,13 @@ st.set_page_config(page_title="Sustanciador Pro - Colpensiones", layout="wide", 
 # ==========================================
 # MANEJO DE ESTADO EN SESIÓN
 # ==========================================
-if 'datos_basicos' not in st.session_state:
-    st.session_state.datos_basicos = {"cedula": "", "nombre": "", "fecha_nac": date(1975, 1, 1), "genero": "Masculino"}
+if 'datos_basicos' not in st.session_state: st.session_state.datos_basicos = {"cedula": "", "nombre": "", "fecha_nac": date(1975, 1, 1), "genero": "Masculino"}
 if 'df_crudo' not in st.session_state: st.session_state.df_crudo = None
 if 'df_final' not in st.session_state: st.session_state.df_final = None
 if 'liq_resultados' not in st.session_state: st.session_state.liq_resultados = None
 if 'archivos_cargados' not in st.session_state: st.session_state.archivos_cargados = {"resoluciones": 0, "peticion": False}
+if 'peticiones_texto' not in st.session_state: st.session_state.peticiones_texto = "Reconocimiento de Pensión de Vejez."
+if 'peticion_procesada' not in st.session_state: st.session_state.peticion_procesada = False
 
 def get_requisitos_estatus(genero, fecha_estatus, fecha_cumple_edad=None):
     edad_req = 62 if genero == "Masculino" else 57
@@ -44,7 +45,7 @@ def get_requisitos_estatus(genero, fecha_estatus, fecha_cumple_edad=None):
                 nota = f"Consolidó estatus en {anio}. Aplica disminución progresiva (Sentencia C-197/23): {semanas_req} semanas."
     return edad_req, semanas_req, nota
 
-def generar_resolucion_word(datos_afi, liq, req, estatus_cumplido, archivos):
+def generar_resolucion_word(datos_afi, liq, req, estatus_cumplido, archivos, peticiones_texto):
     doc = Document()
     style = doc.styles['Normal']
     style.font.name = 'Arial'
@@ -62,7 +63,12 @@ def generar_resolucion_word(datos_afi, liq, req, estatus_cumplido, archivos):
 
     doc.add_heading('1. ANTECEDENTES (HECHOS)', level=1)
     texto_peticion = "radicó petición formal" if archivos['peticion'] else "elevó solicitud"
-    doc.add_paragraph(f"Que el(la) señor(a) {datos_afi['nombre'].upper()}, identificado(a) con cédula No. {datos_afi['cedula']}, {texto_peticion} ante esta Administradora para el estudio de su prestación económica.")
+    
+    doc.add_paragraph(f"Que el(la) señor(a) {datos_afi['nombre'].upper()}, identificado(a) con cédula No. {datos_afi['cedula']}, {texto_peticion} ante esta Administradora manifestando expresamente las siguientes pretensiones:")
+    
+    # Inyección de las peticiones capturadas
+    p_pet = doc.add_paragraph()
+    p_pet.add_run(f'"{peticiones_texto}"').italic = True
     
     if archivos['resoluciones'] > 0:
         doc.add_paragraph(f"Que obran en el expediente {archivos['resoluciones']} acto(s) administrativo(s) previo(s) proferido(s) por la entidad, los cuales fueron objeto de análisis integral.")
@@ -90,14 +96,16 @@ def generar_resolucion_word(datos_afi, liq, req, estatus_cumplido, archivos):
             f"4. TASA DE REEMPLAZO FINAL DEFINITIVA: {f_data['tasa_final']:.2f}%"
         )
         doc.add_paragraph(f"En consecuencia, el valor de la mesada pensional asciende a ${liq['mesada']:,.0f} COP mensuales.")
+        doc.add_paragraph("Que, en mérito de lo expuesto, procede despachar favorablemente las pretensiones de la petición radicada por el(la) asegurado(a).")
     else:
         doc.add_paragraph(f"Que el(la) solicitante NO CUMPLE con los requisitos exigidos. A la fecha de corte cuenta únicamente con {liq['semanas']:,.2f} semanas, siendo insuficientes frente a las {req['semanas']} semanas exigidas por el ordenamiento.")
+        doc.add_paragraph("Que, en mérito de lo expuesto, al no configurarse los presupuestos normativos, hay lugar a despachar desfavorablemente las peticiones elevadas de fondo por el(la) asegurado(a).")
 
     doc.add_heading('RESUELVE:', level=1)
     if estatus_cumplido:
-        doc.add_paragraph(f"ARTÍCULO PRIMERO: RECONOCER Y ORDENAR EL PAGO de una Pensión de Vejez a favor de {datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, en cuantía de ${liq['mesada']:,.0f} COP mensuales.")
+        doc.add_paragraph(f"ARTÍCULO PRIMERO: RECONOCER Y ORDENAR EL PAGO de una Pensión de Vejez a favor de {datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, en cuantía de ${liq['mesada']:,.0f} COP mensuales, resolviendo de fondo lo pretendido.")
     else:
-        doc.add_paragraph(f"ARTÍCULO PRIMERO: NEGAR el reconocimiento de la Pensión de Vejez a favor de {datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, por las razones expuestas en la parte motiva.")
+        doc.add_paragraph(f"ARTÍCULO PRIMERO: NEGAR el reconocimiento de la Pensión de Vejez y despachar desfavorablemente la petición elevada por {datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, por las razones expuestas en la parte motiva.")
 
     doc.add_paragraph("ARTÍCULO FINAL: RECURSOS. Contra la presente Resolución proceden los recursos de ley.")
     doc.add_paragraph("\nNOTIFÍQUESE Y CÚMPLASE\n\n\nFirma Autorizada\nDirección de Prestaciones Económicas\nColpensiones")
@@ -121,9 +129,10 @@ with st.sidebar:
         st.session_state.df_final = None
         st.session_state.liq_resultados = None
         st.session_state.archivos_cargados = {"resoluciones": 0, "peticion": False}
+        st.session_state.peticiones_texto = "Reconocimiento de Pensión de Vejez."
+        st.session_state.peticion_procesada = False
         st.rerun()
 
-# --- MÓDULOS DEL SUSTANCIADOR ---
 mod1, mod2, mod3, mod4 = st.tabs([
     "Módulo 1: Datos Básicos", 
     "Módulo 2: Historia Laboral", 
@@ -135,7 +144,7 @@ mod1, mod2, mod3, mod4 = st.tabs([
 # MÓDULO 1: DATOS BÁSICOS
 # ------------------------------------------
 with mod1:
-    st.header("📂 Carga del Expediente y Datos Biográficos")
+    st.header("📂 Carga del Expediente y Extracción de Peticiones")
     
     col_docs1, col_docs2 = st.columns(2)
     with col_docs1:
@@ -149,9 +158,18 @@ with mod1:
             
     with col_docs2:
         resoluciones_files = st.file_uploader("2. Resoluciones Previas", type="pdf", accept_multiple_files=True)
-        peticion_file = st.file_uploader("3. Petición (Opcional)", type="pdf")
+        peticion_file = st.file_uploader("3. Petición del Ciudadano", type="pdf")
         
-        # Guardar en sesión estado de archivos
+        # Procesamiento automático de la petición si se carga
+        if peticion_file and not st.session_state.peticion_procesada:
+            peticion_file.seek(0)
+            datos_upd, pet_ext = extraer_datos_peticion(peticion_file, st.session_state.datos_basicos)
+            st.session_state.datos_basicos = datos_upd
+            if pet_ext != "Reconocimiento de Pensión de Vejez.":
+                st.session_state.peticiones_texto = pet_ext
+            st.session_state.peticion_procesada = True
+            st.rerun()
+        
         st.session_state.archivos_cargados['resoluciones'] = len(resoluciones_files) if resoluciones_files else 0
         st.session_state.archivos_cargados['peticion'] = True if peticion_file else False
 
@@ -166,6 +184,11 @@ with mod1:
         idx_gen = 0 if st.session_state.datos_basicos["genero"] == "Masculino" else 1
         st.session_state.datos_basicos["genero"] = st.radio("Género", ["Masculino", "Femenino"], index=idx_gen, horizontal=True)
 
+    st.divider()
+    st.subheader("Peticiones a Resolver de Fondo")
+    st.caption("Extraídas automáticamente del documento de solicitud. Edite si es necesario para el cuerpo de la resolución.")
+    st.session_state.peticiones_texto = st.text_area("Pretensiones / Solicitudes:", value=st.session_state.peticiones_texto, height=100)
+
 # ------------------------------------------
 # MÓDULO 2: HISTORIA LABORAL
 # ------------------------------------------
@@ -175,7 +198,6 @@ with mod2:
     
     if st.session_state.df_crudo is not None and not st.session_state.df_crudo.empty:
         df = st.session_state.df_crudo
-        st.write("Configure el mapeo de columnas antes de sanear:")
         cols = df.columns.tolist()
         c1, c2, c3, c4 = st.columns(4)
         cd = c1.selectbox("Columna 'Desde'", cols, index=2 if len(cols)>2 else 0)
@@ -202,7 +224,7 @@ with mod2:
 # ------------------------------------------
 with mod3:
     st.header("🧮 Liquidación y Derechos")
-    st.info(f"Asegurado: {st.session_state.datos_basicos['nombre']} | Fecha de Nacimiento: {st.session_state.datos_basicos['fecha_nac'].strftime('%d/%m/%Y')}")
+    st.info(f"Asegurado: {st.session_state.datos_basicos['nombre']} | Petición principal: {st.session_state.peticiones_texto[:50]}...")
     
     if st.session_state.df_final is not None:
         if st.button("Calcular Derecho y Liquidar Prestación", type="primary"):
@@ -229,7 +251,6 @@ with mod3:
             bloques = int(sem_adicionales // 50)
             incremento = min(bloques * 1.5, 15.0)
 
-            # Corrección del Timestamp issue aplicada aquí
             cumple_edad = pd.to_datetime(fechas['fecha_cumple_edad']).date() <= date.today()
             cumple_sem = total_sem >= sem_req
             reconoce = cumple_edad and cumple_sem
@@ -282,7 +303,8 @@ with mod4:
             r, 
             req_data, 
             r['reconoce'], 
-            st.session_state.archivos_cargados
+            st.session_state.archivos_cargados,
+            st.session_state.peticiones_texto
         )
         
         st.download_button(
