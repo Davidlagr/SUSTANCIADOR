@@ -1,6 +1,52 @@
 import pdfplumber
 import pandas as pd
 import re
+from datetime import datetime, date
+
+def extraer_datos_basicos(pdf_file):
+    """
+    Extrae cédula, nombre, fecha de nacimiento y género 
+    de la primera página del PDF de la Historia Laboral.
+    """
+    datos = {
+        "cedula": "", 
+        "nombre": "", 
+        "fecha_nac": date(1975, 1, 1), # Fecha por defecto
+        "genero": "Masculino"
+    }
+    
+    try:
+        with pdfplumber.open(pdf_file) as pdf:
+            if len(pdf.pages) > 0:
+                text = pdf.pages[0].extract_text()
+                if text:
+                    # Patrones Regex ajustados a formatos típicos de Colpensiones
+                    match_cedula = re.search(r'(?:Documento|C\.C\.|Cédula)[\s:-]*([\d\.]+)', text, re.IGNORECASE)
+                    match_nombre = re.search(r'(?:Nombres y Apellidos|Nombre)[\s:-]*([A-ZÑ\s]+)', text)
+                    match_fecha = re.search(r'(?:Nacimiento)[\s:-]*(\d{2}/\d{2}/\d{4})', text, re.IGNORECASE)
+                    match_sexo = re.search(r'(?:Sexo|Género)[\s:-]*([MF]|Masculino|Femenino)', text, re.IGNORECASE)
+
+                    if match_cedula: 
+                        datos["cedula"] = match_cedula.group(1).replace(".", "").strip()
+                    
+                    if match_nombre: 
+                        # Limpiamos saltos de línea y espacios extra del nombre
+                        nombre_limpio = re.sub(r'\s+', ' ', match_nombre.group(1)).strip()
+                        datos["nombre"] = nombre_limpio
+                    
+                    if match_fecha:
+                        try:
+                            datos["fecha_nac"] = datetime.strptime(match_fecha.group(1), "%d/%m/%Y").date()
+                        except ValueError:
+                            pass
+                            
+                    if match_sexo:
+                        val_sexo = match_sexo.group(1).upper()
+                        datos["genero"] = "Femenino" if val_sexo.startswith('F') else "Masculino"
+    except Exception as e:
+        pass # Falla silenciosa: si no lee, permite al usuario llenarlo manualmente
+        
+    return datos
 
 def extraer_tabla_cruda(archivo_pdf):
     """
