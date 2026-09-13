@@ -36,34 +36,46 @@ def extraer_datos_basicos(pdf_file):
 def extraer_datos_peticion(pdf_file, datos_actuales):
     """
     Rescata datos básicos faltantes desde la petición del ciudadano
-    y extrae el bloque exacto de pretensiones o solicitudes para la resolución.
+    y extrae el bloque exacto de pretensiones.
     """
     peticiones = "Reconocimiento de Pensión de Vejez."
     try:
         with pdfplumber.open(pdf_file) as pdf:
             text = ""
-            # Leer las primeras páginas donde suele estar la petición
             for page in pdf.pages[:3]:
                 page_text = page.extract_text()
                 if page_text: text += page_text + "\n"
                 
             if text:
-                # 1. Rescate de Datos Básicos faltantes
-                if not datos_actuales.get("cedula") or datos_actuales["cedula"] == "":
-                    match_cedula = re.search(r'(?:C\.C\.|cédula de ciudadanía.*?N[o\.]?|identificado.*?con.*?N[o\.]?)[\s:]*([\d\.]+)', text, re.IGNORECASE)
-                    if match_cedula: datos_actuales["cedula"] = match_cedula.group(1).replace(".", "").strip()
+                # 1. Rescate Cédula
+                if not datos_actuales.get("cedula"):
+                    m_ced = re.search(r'(?:C\.C\.|cédula.*?No\.|Ciudadanía:\s*)([\d\.]+)', text, re.IGNORECASE)
+                    if m_ced: datos_actuales["cedula"] = m_ced.group(1).replace(".", "").strip()
                     
-                if not datos_actuales.get("nombre") or datos_actuales["nombre"] == "":
-                    match_nombre = re.search(r'(?:Yo[,]?\s+)(.*?)(?:[,]?\s+identificado|[,]?\s+mayor de edad)', text, re.IGNORECASE)
-                    if match_nombre: datos_actuales["nombre"] = match_nombre.group(1).strip().upper()
+                # 2. Rescate Nombre
+                if not datos_actuales.get("nombre"):
+                    m_nom = re.search(r'(?:Yo[,]?\s+|Peticionari[oa]:\s*)([A-ZÑÁÉÍÓÚa-zñáéíóú\s]+)(?:[,]?\s+identificad|Cédula)', text, re.IGNORECASE)
+                    if m_nom: datos_actuales["nombre"] = m_nom.group(1).strip().upper()
 
-                # 2. Extracción de Peticiones a resolver de fondo
+                # 3. Rescate Género
+                m_gen = re.search(r'identificad(a|o)\s+con', text, re.IGNORECASE)
+                if m_gen:
+                    datos_actuales["genero"] = "Femenino" if m_gen.group(1).lower() == 'a' else "Masculino"
+
+                # 4. Rescate Fecha Nacimiento (Ej: "Nací el 22 de enero de 1974")
+                meses = {"enero":1, "febrero":2, "marzo":3, "abril":4, "mayo":5, "junio":6, "julio":7, "agosto":8, "septiembre":9, "octubre":10, "noviembre":11, "diciembre":12}
+                m_nac = re.search(r'nac[íi]\s+el\s+(\d{1,2})\s+de\s+([a-z]+)\s+de\s+(\d{4})', text, re.IGNORECASE)
+                if m_nac:
+                    dia, mes_str, anio = int(m_nac.group(1)), m_nac.group(2).lower(), int(m_nac.group(3))
+                    if mes_str in meses:
+                        datos_actuales["fecha_nac"] = date(anio, meses[mes_str], dia)
+
+                # 5. Extracción de Peticiones
                 match_solicitud = re.search(r'(?i)(?:solicito|peticion(?:es)?|pretension(?:es)?|solicitud(?:es)?)[\s\n:]+(.*?)(?:\n\s*(?:hechos|fundamentos|pruebas|anexos|notificaciones|derecho)|\Z)', text, re.DOTALL)
                 if match_solicitud:
                     ext = match_solicitud.group(1).strip()
                     ext = re.sub(r'\n+', ' ', ext)
-                    if len(ext) > 10: 
-                        peticiones = ext
+                    if len(ext) > 10: peticiones = ext
     except: pass
     return datos_actuales, peticiones
 
