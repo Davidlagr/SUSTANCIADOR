@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, date
 from io import BytesIO
 from docx import Document
-from docx.shared import Pt
+from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 from data_processor import extraer_tabla_cruda, limpiar_y_estandarizar, aplicar_regla_simultaneidad, extraer_datos_basicos, extraer_datos_peticion
@@ -20,31 +20,34 @@ if 'df_final' not in st.session_state: st.session_state.df_final = None
 if 'liq_resultados' not in st.session_state: st.session_state.liq_resultados = None
 if 'archivos_cargados' not in st.session_state: st.session_state.archivos_cargados = {"resoluciones": 0, "peticion": False}
 if 'peticiones_texto' not in st.session_state: st.session_state.peticiones_texto = "Reconocimiento de Pensión de Vejez."
-if 'peticion_procesada' not in st.session_state: st.session_state.peticion_procesada = False
 
+# --- AJUSTE CLAVE 1: REQUISITOS EN TIEMPO REAL ---
 def get_requisitos_estatus(genero, fecha_estatus, fecha_cumple_edad=None):
+    anio_actual = datetime.now().year
     edad_req = 62 if genero == "Masculino" else 57
+    
     if genero == "Masculino":
         semanas_req = 1300
         nota = "Aplica regla general Ley 797/2003 (1300 semanas)."
     else:
-        if pd.isna(fecha_estatus):
-            anio_actual = datetime.now().year
-            anio_cumple = fecha_cumple_edad.year if fecha_cumple_edad else anio_actual
-            anio_proy = max(anio_actual, anio_cumple)
-            anio_proy = max(2026, anio_proy)
-            semanas_req = 1250 if anio_proy == 2026 else max(1000, 1300 - (50 + ((anio_proy - 2026) * 25)))
-            nota = f"No consolida estatus. Proyección de {semanas_req} semanas (Sentencia C-197/23)."
+        # Se evalúa conforme al año de la solicitud (actual) o causación
+        anio_eval = anio_actual if pd.isna(fecha_estatus) else fecha_estatus.year
+        if anio_eval < 2026:
+            semanas_req = 1300
+            nota = f"Exigencia de 1300 semanas (causación en {anio_eval})."
+        elif anio_eval == 2026:
+            semanas_req = 1250
+            nota = f"Aplica disminución Sentencia C-197/23 para el año {anio_eval}: 1250 semanas."
         else:
-            anio = fecha_estatus.year
-            if anio < 2026:
-                semanas_req = 1300
-                nota = f"Consolidó estatus en {anio}. Exigencia de 1300 semanas."
-            else:
-                semanas_req = 1250 if anio == 2026 else max(1000, 1300 - (50 + ((anio - 2026) * 25)))
-                nota = f"Consolidó estatus en {anio}. Aplica disminución progresiva (Sentencia C-197/23): {semanas_req} semanas."
+            descenso = 50 + ((anio_eval - 2026) * 25)
+            semanas_req = max(1000, 1300 - descenso)
+            nota = f"Aplica disminución progresiva (Sentencia C-197/23) para el año {anio_eval}: {semanas_req} semanas."
+            
     return edad_req, semanas_req, nota
 
+# ==========================================
+# MOTOR GENERADOR DEL ACTO ADMINISTRATIVO
+# ==========================================
 def generar_resolucion_word(datos_afi, liq, req, estatus_cumplido, archivos, peticiones_texto, df_historia):
     doc = Document()
     style = doc.styles['Normal']
@@ -73,17 +76,16 @@ def generar_resolucion_word(datos_afi, liq, req, estatus_cumplido, archivos, pet
     if archivos['resoluciones'] > 0:
         doc.add_paragraph(f"Que obran en el expediente {archivos['resoluciones']} acto(s) administrativo(s) previo(s) proferido(s) por la entidad, los cuales fueron objeto de análisis integral.")
     
-    doc.add_paragraph(f"Que procesada la Historia Laboral aportada, se constata que cuenta con {liq['semanas']:,.2f} semanas cotizadas válidas (Ver Anexo Técnico adjunto a este acto administrativo).")
+    doc.add_paragraph(f"Que procesada la Historia Laboral aportada, se constata que cuenta con {liq['semanas']:,.2f} semanas cotizadas válidas (Ver Anexo Técnico al final de este acto administrativo).")
 
     # --- 2. CONSIDERACIONES Y CASO CONCRETO ---
     doc.add_heading('2. CONSIDERACIONES JURÍDICAS Y CASO CONCRETO', level=1)
     doc.add_paragraph("Que el artículo 33 de la Ley 100 de 1993, modificado por el art. 9 de la Ley 797 de 2003, establece los requisitos concurrentes de edad y densidad de semanas.")
 
     if "C-197/23" in req['nota']:
-        doc.add_paragraph(f"Que en aplicación de la Sentencia C-197 de 2023 de la Corte Constitucional, el requisito de semanas exigido para la causación del derecho es de {req['semanas']} semanas.")
+        doc.add_paragraph(f"Que en aplicación de la Sentencia C-197 de 2023 de la Corte Constitucional, el requisito de semanas exigido para la causación del derecho evaluado a la fecha corresponde a {req['semanas']} semanas.")
 
     if estatus_cumplido:
-        # RECONOCIMIENTO
         doc.add_paragraph(f"Que el(la) solicitante acreditó el cumplimiento de {req['edad']} años de edad y superó el umbral de semanas exigidas, consolidando el derecho pensional.")
         f_data = liq['formula_tasa']
         
@@ -98,49 +100,46 @@ def generar_resolucion_word(datos_afi, liq, req, estatus_cumplido, archivos, pet
             f"4. TASA DE REEMPLAZO FINAL DEFINITIVA: {f_data['tasa_final']:.2f}%"
         )
         doc.add_paragraph(f"En consecuencia, el valor de la mesada pensional asciende a ${liq['mesada']:,.0f} COP mensuales.")
-        doc.add_paragraph("Que, en mérito de lo expuesto, procede despachar favorablemente las pretensiones de la petición radicada por el(la) asegurado(a).")
-    
     else:
-        # NEGACIÓN (LÓGICA MEJORADA)
         doc.add_paragraph("Que, descendiendo al caso concreto, el(la) solicitante NO CUMPLE con la totalidad de los requisitos exigidos por la norma para acceder a la Pensión de Vejez.")
         
         if liq['cumple_sem'] and not liq['cumple_edad']:
-            doc.add_paragraph(f"Si bien la historia laboral evidencia un total de {liq['semanas']:,.2f} semanas cotizadas, superando ampliamente las {req['semanas']} semanas exigidas, el(la) asegurado(a) NO ACREDITA el requisito de edad. A la fecha de radicación, no ha cumplido los {req['edad']} años de edad exigidos por el ordenamiento jurídico para las personas de género {datos_afi['genero'].lower()}.")
+            doc.add_paragraph(f"Si bien la historia laboral evidencia un total de {liq['semanas']:,.2f} semanas cotizadas, el(la) asegurado(a) NO ACREDITA el requisito de edad. A la fecha de radicación, no ha cumplido los {req['edad']} años de edad exigidos por el ordenamiento jurídico para el género {datos_afi['genero'].lower()}.")
         elif liq['cumple_edad'] and not liq['cumple_sem']:
-            doc.add_paragraph(f"Si bien el(la) afiliado(a) acredita el requisito de edad al tener los {req['edad']} años exigidos, a la fecha de corte cuenta únicamente con {liq['semanas']:,.2f} semanas, siendo insuficientes frente a las {req['semanas']} semanas requeridas por la Ley.")
+            doc.add_paragraph(f"Si bien el(la) afiliado(a) acredita el requisito de edad ({req['edad']} años), a la fecha de corte cuenta únicamente con {liq['semanas']:,.2f} semanas, siendo insuficientes frente a las {req['semanas']} semanas requeridas por la Ley.")
         else:
-            doc.add_paragraph(f"El(la) afiliado(a) NO ACREDITA el requisito de edad ({req['edad']} años) ni el requisito de semanas cotizadas, toda vez que cuenta únicamente con {liq['semanas']:,.2f} semanas frente a las {req['semanas']} exigidas.")
+            doc.add_paragraph(f"El(la) afiliado(a) NO ACREDITA el requisito de edad ({req['edad']} años) ni el requisito de semanas cotizadas ({req['semanas']} exigidas), contando únicamente con {liq['semanas']:,.2f} semanas.")
 
-        doc.add_paragraph("Que, en mérito de lo expuesto, al no configurarse los presupuestos normativos de causación, hay lugar a despachar desfavorablemente las peticiones elevadas de fondo por el(la) asegurado(a).")
+    # --- AJUSTE CLAVE 2: RESOLUCIÓN DE PETICIONES ADICIONALES ---
+    doc.add_heading('ANÁLISIS DE PETICIONES ADICIONALES:', level=2)
+    if estatus_cumplido:
+        doc.add_paragraph("Respecto a las demás pretensiones contenidas en el escrito petitorio, como la contabilización de periodos en 365 días y la exoneración de descuentos en salud, la Administradora precisa que el cálculo de la densidad de semanas se realiza conforme al parágrafo 2 del artículo 33 de la Ley 100 de 1993 y la jurisprudencia unificada, y los descuentos por salud son de carácter imperativo y de orden público (Art. 143 Ley 100 de 1993), procediendo a despachar estas peticiones accesorias conforme a estricto derecho.")
+    else:
+        doc.add_paragraph("En relación con las demás pretensiones esbozadas en el escrito petitorio (cómputo de 365 días, no aplicación de descuentos de salud, y declaración de estatus pensional), esta Entidad advierte que al no cumplirse los presupuestos normativos de causación para acceder a la prestación principal, las pretensiones accesorias corren la misma suerte y son despachadas desfavorablemente. Asimismo, se reitera que el cálculo de semanas y los descuentos de ley obedecen a un mandato legal que no puede ser inaplicado por la Administradora.")
 
     # --- 3. RESUELVE ---
     doc.add_heading('RESUELVE:', level=1)
     if estatus_cumplido:
         doc.add_paragraph(f"ARTÍCULO PRIMERO: RECONOCER Y ORDENAR EL PAGO de una Pensión de Vejez a favor de {datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, en cuantía de ${liq['mesada']:,.0f} COP mensuales, resolviendo de fondo lo pretendido.")
     else:
-        doc.add_paragraph(f"ARTÍCULO PRIMERO: NEGAR el reconocimiento de la Pensión de Vejez y despachar desfavorablemente la petición elevada por {datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, por las razones expuestas en la parte motiva.")
+        doc.add_paragraph(f"ARTÍCULO PRIMERO: NEGAR el reconocimiento de la Pensión de Vejez y despachar desfavorablemente las peticiones elevadas por {datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, por las razones expuestas en la parte motiva.")
 
-    doc.add_paragraph("ARTÍCULO FINAL: RECURSOS. Contra la presente Resolución proceden los recursos de ley.")
+    doc.add_paragraph("ARTÍCULO FINAL: RECURSOS. Contra la presente Resolución proceden los recursos de ley conforme al CPACA.")
     doc.add_paragraph("\nNOTIFÍQUESE Y CÚMPLASE\n\n\nFirma Autorizada\nDirección de Prestaciones Económicas\nColpensiones")
 
-    # --- 4. ANEXO TÉCNICO: HISTORIA LABORAL (CUADRO CAPTURADO) ---
+    # --- 4. ANEXO TÉCNICO: MIGRACIÓN DE LA HISTORIA LABORAL ---
     doc.add_page_break()
     doc.add_heading('ANEXO TÉCNICO: RESUMEN DE HISTORIA LABORAL (SANEADA)', level=1)
-    doc.add_paragraph("A continuación, se detalla el consolidado de los periodos laborados aplicando la regla de simultaneidad y el saneamiento normativo correspondiente al Sistema General de Pensiones:")
+    doc.add_paragraph("A continuación, se detalla el consolidado de los periodos laborados aplicando la regla de simultaneidad y el saneamiento normativo:")
 
     table = doc.add_table(rows=1, cols=5)
     table.style = 'Table Grid'
     hdr_cells = table.rows[0].cells
-    hdr_cells[0].text = 'Periodo'
-    hdr_cells[1].text = 'Desde'
-    hdr_cells[2].text = 'Hasta'
-    hdr_cells[3].text = 'IBC Sumado'
-    hdr_cells[4].text = 'Semanas'
-
-    for cell in hdr_cells:
-        for paragraph in cell.paragraphs:
-            for run in paragraph.runs:
-                run.bold = True
+    headers = ['Periodo', 'Desde', 'Hasta', 'IBC Sumado', 'Semanas']
+    for i, header_text in enumerate(headers):
+        hdr_cells[i].text = header_text
+        for run in hdr_cells[i].paragraphs[0].runs:
+            run.bold = True
 
     for index, row in df_historia.iterrows():
         row_cells = table.add_row().cells
@@ -170,7 +169,6 @@ with st.sidebar:
         st.session_state.liq_resultados = None
         st.session_state.archivos_cargados = {"resoluciones": 0, "peticion": False}
         st.session_state.peticiones_texto = "Reconocimiento de Pensión de Vejez."
-        st.session_state.peticion_procesada = False
         st.rerun()
 
 mod1, mod2, mod3, mod4 = st.tabs([
@@ -184,33 +182,37 @@ mod1, mod2, mod3, mod4 = st.tabs([
 # MÓDULO 1: DATOS BÁSICOS
 # ------------------------------------------
 with mod1:
-    st.header("📂 Carga del Expediente y Extracción de Peticiones")
+    st.header("📂 Carga del Expediente y Datos Biográficos")
     
     col_docs1, col_docs2 = st.columns(2)
     with col_docs1:
         hl_file = st.file_uploader("1. Historia Laboral (PDF)", type="pdf")
-        if hl_file and st.session_state.df_crudo is None:
-            hl_file.seek(0)
-            st.session_state.datos_basicos = extraer_datos_basicos(hl_file)
-            hl_file.seek(0)
-            st.session_state.df_crudo = extraer_tabla_cruda(hl_file)
-            st.rerun()
-            
     with col_docs2:
         resoluciones_files = st.file_uploader("2. Resoluciones Previas", type="pdf", accept_multiple_files=True)
         peticion_file = st.file_uploader("3. Petición del Ciudadano", type="pdf")
         
-        if peticion_file and not st.session_state.peticion_procesada:
+    st.session_state.archivos_cargados['resoluciones'] = len(resoluciones_files) if resoluciones_files else 0
+    st.session_state.archivos_cargados['peticion'] = True if peticion_file else False
+
+    # Botón explícito para cruzar datos y evitar recargas infinitas
+    if st.button("Procesar Archivos para Extraer Datos Básicos y Peticiones", type="primary"):
+        datos_temp = {"cedula": "", "nombre": "", "fecha_nac": date(1975, 1, 1), "genero": "Masculino"}
+        
+        if hl_file:
+            hl_file.seek(0)
+            datos_temp = extraer_datos_basicos(hl_file)
+            hl_file.seek(0)
+            st.session_state.df_crudo = extraer_tabla_cruda(hl_file)
+            
+        if peticion_file:
             peticion_file.seek(0)
-            datos_upd, pet_ext = extraer_datos_peticion(peticion_file, st.session_state.datos_basicos)
-            st.session_state.datos_basicos = datos_upd
+            datos_temp, pet_ext = extraer_datos_peticion(peticion_file, datos_temp)
             if pet_ext != "Reconocimiento de Pensión de Vejez.":
                 st.session_state.peticiones_texto = pet_ext
-            st.session_state.peticion_procesada = True
-            st.rerun()
-        
-        st.session_state.archivos_cargados['resoluciones'] = len(resoluciones_files) if resoluciones_files else 0
-        st.session_state.archivos_cargados['peticion'] = True if peticion_file else False
+                
+        st.session_state.datos_basicos = datos_temp
+        st.success("Cruce de datos completado.")
+        st.rerun()
 
     st.divider()
     st.subheader("Datos del Asegurado (Extraídos/Editables)")
@@ -225,8 +227,7 @@ with mod1:
 
     st.divider()
     st.subheader("Peticiones a Resolver de Fondo")
-    st.caption("Extraídas automáticamente del documento de solicitud. Edite si es necesario para el cuerpo de la resolución.")
-    st.session_state.peticiones_texto = st.text_area("Pretensiones / Solicitudes:", value=st.session_state.peticiones_texto, height=100)
+    st.session_state.peticiones_texto = st.text_area("Pretensiones capturadas:", value=st.session_state.peticiones_texto, height=120)
 
 # ------------------------------------------
 # MÓDULO 2: HISTORIA LABORAL
@@ -249,8 +250,6 @@ with mod2:
             if not clean.empty:
                 st.session_state.df_final = aplicar_regla_simultaneidad(clean)
                 st.success("Historia Laboral procesada exitosamente. Continúe al Módulo 3.")
-            else:
-                st.error("Error validando columnas.")
                 
         if st.session_state.df_final is not None:
             st.write("### Base Consolidada de Cotizaciones")
@@ -263,7 +262,7 @@ with mod2:
 # ------------------------------------------
 with mod3:
     st.header("🧮 Liquidación y Derechos")
-    st.info(f"Asegurado: {st.session_state.datos_basicos['nombre']} | Petición principal: {st.session_state.peticiones_texto[:50]}...")
+    st.info(f"Asegurado: {st.session_state.datos_basicos['nombre']}")
     
     if st.session_state.df_final is not None:
         if st.button("Calcular Derecho y Liquidar Prestación", type="primary"):
@@ -312,8 +311,8 @@ with mod3:
                 st.metric("MESADA PROYECTADA", f"${r['mesada']:,.0f}")
             else:
                 st.error("❌ NO ACREDITA REQUISITOS DE LEY")
+                st.write(f"- Edad cumplida: **{'Sí' if r['cumple_edad'] else 'No'}** (Requisito: {r['edad_req']} años)")
                 st.write(f"- Semanas actuales: **{r['semanas']:,.2f}** / Semanas exigidas: **{r['sem_req']}**")
-                st.write(f"- Edad cumplida: **{'Sí' if r['cumple_edad'] else 'No'}**")
     else:
         st.warning("Debe procesar la Historia Laboral en el Módulo 2.")
 
@@ -335,7 +334,7 @@ with mod4:
         c4.metric("Sentido del Acto", estado_texto, delta_color="normal" if r['reconoce'] else "inverse")
 
         st.divider()
-        st.write("Generando acto administrativo e inyectando cuadro anexo probatorio...")
+        st.write("Generando acto administrativo con las consideraciones jurídicas correspondientes y Anexo Técnico de la Historia Laboral...")
         
         req_data = {"edad": r['edad_req'], "semanas": r['sem_req'], "nota": r['nota_req']}
         datos_afi = {
