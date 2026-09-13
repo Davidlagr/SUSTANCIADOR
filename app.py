@@ -207,7 +207,7 @@ if st.session_state.analisis_completado and st.session_state.df_final is not Non
     
     # Dashboard de Resultados
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Cumple Edad", "Sí" if fechas['fecha_cumple_edad'] <= datetime.now().date() else "No")
+c1.metric("Cumple Edad", "Sí" if pd.to_datetime(fechas['fecha_cumple_edad']).date() <= date.today() else "No")
     c2.metric("Semanas Válidas", f"{total_sem:,.2f}")
     c3.metric("IBL Favorable", f"${ibl_def:,.0f}", origen_ibl)
     
