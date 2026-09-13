@@ -5,13 +5,13 @@ from datetime import datetime, date
 
 def extraer_datos_basicos(pdf_file):
     """
-    Extrae cédula, nombre, fecha de nacimiento y género 
-    de la primera página del PDF de la Historia Laboral.
+    Extrae cédula, nombre, fecha de nacimiento y sexo 
+    del encabezado de la Historia Laboral de Colpensiones.
     """
     datos = {
         "cedula": "", 
         "nombre": "", 
-        "fecha_nac": date(1975, 1, 1), # Fecha por defecto
+        "fecha_nac": date(1975, 1, 1),
         "genero": "Masculino"
     }
     
@@ -20,19 +20,17 @@ def extraer_datos_basicos(pdf_file):
             if len(pdf.pages) > 0:
                 text = pdf.pages[0].extract_text()
                 if text:
-                    # Patrones Regex ajustados a formatos típicos de Colpensiones
-                    match_cedula = re.search(r'(?:Documento|C\.C\.|Cédula)[\s:-]*([\d\.]+)', text, re.IGNORECASE)
-                    match_nombre = re.search(r'(?:Nombres y Apellidos|Nombre)[\s:-]*([A-ZÑ\s]+)', text)
-                    match_fecha = re.search(r'(?:Nacimiento)[\s:-]*(\d{2}/\d{2}/\d{4})', text, re.IGNORECASE)
-                    match_sexo = re.search(r'(?:Sexo|Género)[\s:-]*([MF]|Masculino|Femenino)', text, re.IGNORECASE)
+                    # Expresiones Regulares ajustadas al formato real de Colpensiones
+                    match_cedula = re.search(r'(?:Número de Documento|Documento|C\.C\.)[\s:]*([\d\.]+)', text, re.IGNORECASE)
+                    match_nombre = re.search(r'(?:Nombres y Apellidos|Nombre)[\s:]*([A-ZÑÁÉÍÓÚ\s]+)(?=\n|Fecha|Sexo|Tipo)', text, re.IGNORECASE)
+                    match_fecha = re.search(r'(?:Fecha de Nacimiento|Nacimiento)[\s:]*(\d{2}/\d{2}/\d{4})', text, re.IGNORECASE)
+                    match_sexo = re.search(r'(?:Sexo)[\s:]*([MF])', text, re.IGNORECASE)
 
                     if match_cedula: 
                         datos["cedula"] = match_cedula.group(1).replace(".", "").strip()
                     
                     if match_nombre: 
-                        # Limpiamos saltos de línea y espacios extra del nombre
-                        nombre_limpio = re.sub(r'\s+', ' ', match_nombre.group(1)).strip()
-                        datos["nombre"] = nombre_limpio
+                        datos["nombre"] = re.sub(r'\s+', ' ', match_nombre.group(1)).strip()
                     
                     if match_fecha:
                         try:
@@ -41,47 +39,34 @@ def extraer_datos_basicos(pdf_file):
                             pass
                             
                     if match_sexo:
-                        val_sexo = match_sexo.group(1).upper()
-                        datos["genero"] = "Femenino" if val_sexo.startswith('F') else "Masculino"
+                        datos["genero"] = "Femenino" if match_sexo.group(1).upper() == 'F' else "Masculino"
     except Exception as e:
-        pass # Falla silenciosa: si no lee, permite al usuario llenarlo manualmente
+        pass
         
     return datos
 
 def extraer_tabla_cruda(archivo_pdf):
-    """
-    Extrae solo la sección 'RESUMEN DE SEMANAS COTIZADAS' para evitar ruido.
-    Alinea columnas antiguas y nuevas.
-    """
+    # (Se mantiene exactamente tu código original)
     filas_crudas = []
-    
     with pdfplumber.open(archivo_pdf) as pdf:
         full_text = ""
         for page in pdf.pages:
             text = page.extract_text() or ""
             full_text += "\n" + text
 
-    # --- ZONA DE RECORTE (LA IDEA NUEVA) ---
-    # Buscamos los marcadores para aislar la tabla principal
     marcador_inicio = "RESUMEN DE SEMANAS COTIZADAS POR EMPLEADOR"
-    # Usamos una palabra clave de cierre común, o el final del documento si no está
     marcador_fin = "DETALLE DE PAGOS EFECTUADOS ANTERIORES" 
     
     idx_inicio = full_text.find(marcador_inicio)
     idx_fin = full_text.find(marcador_fin)
-    
     texto_a_procesar = full_text
     
-    # Aplicar recorte si encontramos los marcadores
     if idx_inicio != -1:
         if idx_fin != -1:
             texto_a_procesar = full_text[idx_inicio:idx_fin]
         else:
-            # Si no hay tabla de detalle (ej: gente joven), vamos hasta el final
             texto_a_procesar = full_text[idx_inicio:]
     else:
-        # Fallback: Si no encuentra el título exacto, busca "Identificación Aportante"
-        # que es la cabecera de la tabla
         idx_alt = full_text.find("Identificación Aportante")
         if idx_alt != -1:
             texto_a_procesar = full_text[idx_alt:]
@@ -94,29 +79,21 @@ def extraer_tabla_cruda(archivo_pdf):
         if not linea: continue
         if not regex_fecha.search(linea): continue
             
-        # A. Formato Moderno (CSV con comillas)
         if '","' in linea:
             token_sep = "||SEP||"
             linea_temp = linea.replace('","', token_sep).strip('"')
             partes = [p.strip() for p in linea_temp.split(token_sep)]
             filas_crudas.append(partes)
-            
-        # B. Formato Antiguo (Sin comillas)
         else:
             fechas = regex_fecha.findall(linea)
             if len(fechas) >= 2:
                 try:
-                    # Usamos fechas como separadores
                     split_1 = linea.split(fechas[0], 1)
-                    p1 = split_1[0].strip() # Nombre
-                    
+                    p1 = split_1[0].strip() 
                     split_2 = split_1[1].split(fechas[1], 1)
-                    p3 = split_2[1].strip() # Valores
-                    
+                    p3 = split_2[1].strip() 
                     valores = re.split(r'\s+', p3)
                     valores = [v for v in valores if v]
-                    
-                    # Alineamos agregando columna dummy al inicio
                     filas_crudas.append(["(Sin ID)", p1, fechas[0], fechas[1]] + valores)
                 except:
                     filas_crudas.append(linea.split())
@@ -124,19 +101,14 @@ def extraer_tabla_cruda(archivo_pdf):
                 filas_crudas.append(linea.split())
 
     if not filas_crudas: return pd.DataFrame()
-
     max_cols = max(len(f) for f in filas_crudas)
     header = [f"Columna {i}" for i in range(max_cols)]
     datos_norm = [f + [None]*(max_cols-len(f)) for f in filas_crudas]
-    
     return pd.DataFrame(datos_norm, columns=header)
 
 def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas):
-    """
-    Limpieza inteligente con rescate de semanas vacías.
-    """
+    # (Se mantiene exactamente tu código original)
     datos = []
-    
     for idx, row in df_crudo.iterrows():
         try:
             raw_desde = str(row[col_desde])
@@ -144,18 +116,14 @@ def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas)
             raw_ibc = str(row[col_ibc])
             raw_semanas = str(row[col_semanas])
             
-            # --- 1. FECHAS ---
             match_d = re.search(r'\d{2}/\d{2}/\d{4}', raw_desde)
             match_h = re.search(r'\d{2}/\d{2}/\d{4}', raw_hasta)
-            
             if not match_d or not match_h: continue
             
             desde = pd.to_datetime(match_d.group(0), dayfirst=True, errors='coerce')
             hasta = pd.to_datetime(match_h.group(0), dayfirst=True, errors='coerce')
-            
             if pd.isna(desde) or pd.isna(hasta): continue
             
-            # --- 2. VALORES ---
             def clean_num(val):
                 if not val or val.lower() == 'none': return 0.0
                 v = re.sub(r'[^\d\.,]', '', val)
@@ -170,12 +138,8 @@ def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas)
 
             ibc = clean_num(raw_ibc)
             semanas_leidas = clean_num(raw_semanas)
-            
-            # --- 3. LÓGICA DE RESCATE (CRUCIAL PARA AÑOS 80) ---
             semanas_final = semanas_leidas
             
-            # Si el PDF dice 0 semanas, vacío, o un número absurdo (>55)
-            # calculamos las semanas matemáticamente por las fechas.
             recalcular = False
             if semanas_leidas <= 0.1: recalcular = True
             elif semanas_leidas > 55: recalcular = True 
@@ -195,7 +159,6 @@ def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas)
                     "Semanas": semanas_final,
                     "Aportante": "Manual"
                 })
-
         except Exception as e:
             continue
             
@@ -203,6 +166,7 @@ def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas)
     return df.sort_values('Desde') if not df.empty else df
 
 def aplicar_regla_simultaneidad(df):
+    # (Se mantiene exactamente tu código original)
     if df.empty: return df
     df['Periodo'] = df['Desde'].dt.to_period('M')
     return df.groupby('Periodo').agg({
