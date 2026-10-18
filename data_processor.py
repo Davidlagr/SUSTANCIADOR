@@ -62,7 +62,7 @@ def extraer_datos_peticion(pdf_file, datos_actuales):
                 if m_gen:
                     datos_actuales["genero"] = "Femenino" if m_gen.group(1).lower() == 'a' else "Masculino"
 
-                # 4. Rescate Fecha Nacimiento (Ej: "Nací el 22 de enero de 1974")
+                # 4. Rescate Fecha Nacimiento
                 meses = {"enero":1, "febrero":2, "marzo":3, "abril":4, "mayo":5, "junio":6, "julio":7, "agosto":8, "septiembre":9, "octubre":10, "noviembre":11, "diciembre":12}
                 m_nac = re.search(r'nac[íi]\s+el\s+(\d{1,2})\s+de\s+([a-z]+)\s+de\s+(\d{4})', text, re.IGNORECASE)
                 if m_nac:
@@ -154,11 +154,23 @@ def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas)
                 if not val or val.lower() == 'none': return 0.0
                 v = re.sub(r'[^\d\.,]', '', val)
                 if not v: return 0.0
-                if ',' in v and '.' in v: v = v.replace('.','').replace(',','.')
-                elif v.count('.') > 1: v = v.replace('.','')
+                
+                # Manejo de separadores para moneda y semanas (Estándar Colombia/Colpensiones)
+                if ',' in v and '.' in v: 
+                    # Tiene ambos (ej. 1.000.000,50)
+                    v = v.replace('.','').replace(',','.')
+                elif v.count('.') > 1: 
+                    # Múltiples puntos, seguro son miles (ej. 1.100.000)
+                    v = v.replace('.','')
                 elif ',' in v: 
-                    if len(v.split(',')[-1])==2: v = v.replace(',','.')
+                    # Tiene una coma. Si tiene 2 o menos dígitos al final es decimal (ej. 4,29). Si tiene más, son miles (ej. 1,000)
+                    if len(v.split(',')[-1]) <= 2: v = v.replace(',','.')
                     else: v = v.replace(',','')
+                elif '.' in v:
+                    # Tiene un punto. Si tiene exactamente 3 dígitos al final, es un separador de miles de IBC (ej. 197.167)
+                    if len(v.split('.')[-1]) == 3: v = v.replace('.','')
+                    # Si no son 3, se queda como punto decimal natural (ej. 26.29)
+
                 try: return float(v)
                 except: return 0.0
 
