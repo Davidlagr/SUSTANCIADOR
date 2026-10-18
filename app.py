@@ -21,7 +21,7 @@ if 'liq_resultados' not in st.session_state: st.session_state.liq_resultados = N
 if 'archivos_cargados' not in st.session_state: st.session_state.archivos_cargados = {"resoluciones": 0, "peticion": False}
 if 'peticiones_texto' not in st.session_state: st.session_state.peticiones_texto = "Reconocimiento de Pensión de Vejez."
 
-# --- AJUSTE CLAVE 1: REQUISITOS EN TIEMPO REAL ---
+# --- REQUISITOS EN TIEMPO REAL ---
 def get_requisitos_estatus(genero, fecha_estatus, fecha_cumple_edad=None):
     anio_actual = datetime.now().year
     edad_req = 62 if genero == "Masculino" else 57
@@ -30,7 +30,6 @@ def get_requisitos_estatus(genero, fecha_estatus, fecha_cumple_edad=None):
         semanas_req = 1300
         nota = "Aplica regla general Ley 797/2003 (1300 semanas)."
     else:
-        # Se evalúa conforme al año de la solicitud (actual) o causación
         anio_eval = anio_actual if pd.isna(fecha_estatus) else fecha_estatus.year
         if anio_eval < 2026:
             semanas_req = 1300
@@ -76,61 +75,16 @@ def generar_resolucion_word(datos_afi, liq, req, estatus_cumplido, archivos, pet
     if archivos['resoluciones'] > 0:
         doc.add_paragraph(f"Que obran en el expediente {archivos['resoluciones']} acto(s) administrativo(s) previo(s) proferido(s) por la entidad, los cuales fueron objeto de análisis integral.")
     
-    doc.add_paragraph(f"Que procesada la Historia Laboral aportada, se constata que cuenta con {liq['semanas']:,.2f} semanas cotizadas válidas (Ver Anexo Técnico al final de este acto administrativo).")
-
     # --- 2. CONSIDERACIONES Y CASO CONCRETO ---
     doc.add_heading('2. CONSIDERACIONES JURÍDICAS Y CASO CONCRETO', level=1)
-    doc.add_paragraph("Que el artículo 33 de la Ley 100 de 1993, modificado por el art. 9 de la Ley 797 de 2003, establece los requisitos concurrentes de edad y densidad de semanas.")
+    doc.add_paragraph("Que el artículo 33 de la Ley 100 de 1993, modificado por el artículo 9 de la Ley 797 de 2003, establece que para tener derecho a la Pensión de Vejez, el afiliado debe reunir concurrentemente los requisitos de edad y de semanas cotizadas al Sistema General de Seguridad Social en Pensiones.")
 
     if "C-197/23" in req['nota']:
-        doc.add_paragraph(f"Que en aplicación de la Sentencia C-197 de 2023 de la Corte Constitucional, el requisito de semanas exigido para la causación del derecho evaluado a la fecha corresponde a {req['semanas']} semanas.")
+        doc.add_paragraph(f"Que de acuerdo con la Sentencia C-197 de 2023 proferida por la Corte Constitucional, para el enfoque de género se aplica una disminución progresiva en las semanas exigidas, siendo el requisito normativo de {req['semanas']} semanas para la causación del derecho evaluado a la fecha.")
 
-    if estatus_cumplido:
-        doc.add_paragraph(f"Que el(la) solicitante acreditó el cumplimiento de {req['edad']} años de edad y superó el umbral de semanas exigidas, consolidando el derecho pensional.")
-        f_data = liq['formula_tasa']
-        
-        doc.add_heading('LIQUIDACIÓN TÉCNICA DE LA PRESTACIÓN:', level=2)
-        doc.add_paragraph(f"Que en cumplimiento del artículo 21 de la Ley 100 de 1993, se determinó como IBL más favorable el correspondiente a {liq['origen_ibl']}, indexado por valor de ${liq['ibl']:,.0f} COP.")
-        
-        doc.add_paragraph("Tasa de reemplazo (Art. 34 Ley 100 de 1993):")
-        doc.add_paragraph(
-            f"1. Proporción IBL respecto al SMMLV (s): {f_data['s']:.2f}\n"
-            f"2. Porcentaje base [65.50 - (0.50 * s)]: {f_data['tasa_base']:.2f}%\n"
-            f"3. Incremento por semanas adicionales ({f_data['bloques']} bloque(s)): +{f_data['incremento']:.2f}%\n"
-            f"4. TASA DE REEMPLAZO FINAL DEFINITIVA: {f_data['tasa_final']:.2f}%"
-        )
-        doc.add_paragraph(f"En consecuencia, el valor de la mesada pensional asciende a ${liq['mesada']:,.0f} COP mensuales.")
-    else:
-        doc.add_paragraph("Que, descendiendo al caso concreto, el(la) solicitante NO CUMPLE con la totalidad de los requisitos exigidos por la norma para acceder a la Pensión de Vejez.")
-        
-        if liq['cumple_sem'] and not liq['cumple_edad']:
-            doc.add_paragraph(f"Si bien la historia laboral evidencia un total de {liq['semanas']:,.2f} semanas cotizadas, el(la) asegurado(a) NO ACREDITA el requisito de edad. A la fecha de radicación, no ha cumplido los {req['edad']} años de edad exigidos por el ordenamiento jurídico para el género {datos_afi['genero'].lower()}.")
-        elif liq['cumple_edad'] and not liq['cumple_sem']:
-            doc.add_paragraph(f"Si bien el(la) afiliado(a) acredita el requisito de edad ({req['edad']} años), a la fecha de corte cuenta únicamente con {liq['semanas']:,.2f} semanas, siendo insuficientes frente a las {req['semanas']} semanas requeridas por la Ley.")
-        else:
-            doc.add_paragraph(f"El(la) afiliado(a) NO ACREDITA el requisito de edad ({req['edad']} años) ni el requisito de semanas cotizadas ({req['semanas']} exigidas), contando únicamente con {liq['semanas']:,.2f} semanas.")
-
-    # --- AJUSTE CLAVE 2: RESOLUCIÓN DE PETICIONES ADICIONALES ---
-    doc.add_heading('ANÁLISIS DE PETICIONES ADICIONALES:', level=2)
-    if estatus_cumplido:
-        doc.add_paragraph("Respecto a las demás pretensiones contenidas en el escrito petitorio, como la contabilización de periodos en 365 días y la exoneración de descuentos en salud, la Administradora precisa que el cálculo de la densidad de semanas se realiza conforme al parágrafo 2 del artículo 33 de la Ley 100 de 1993 y la jurisprudencia unificada, y los descuentos por salud son de carácter imperativo y de orden público (Art. 143 Ley 100 de 1993), procediendo a despachar estas peticiones accesorias conforme a estricto derecho.")
-    else:
-        doc.add_paragraph("En relación con las demás pretensiones esbozadas en el escrito petitorio (cómputo de 365 días, no aplicación de descuentos de salud, y declaración de estatus pensional), esta Entidad advierte que al no cumplirse los presupuestos normativos de causación para acceder a la prestación principal, las pretensiones accesorias corren la misma suerte y son despachadas desfavorablemente. Asimismo, se reitera que el cálculo de semanas y los descuentos de ley obedecen a un mandato legal que no puede ser inaplicado por la Administradora.")
-
-    # --- 3. RESUELVE ---
-    doc.add_heading('RESUELVE:', level=1)
-    if estatus_cumplido:
-        doc.add_paragraph(f"ARTÍCULO PRIMERO: RECONOCER Y ORDENAR EL PAGO de una Pensión de Vejez a favor de {datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, en cuantía de ${liq['mesada']:,.0f} COP mensuales, resolviendo de fondo lo pretendido.")
-    else:
-        doc.add_paragraph(f"ARTÍCULO PRIMERO: NEGAR el reconocimiento de la Pensión de Vejez y despachar desfavorablemente las peticiones elevadas por {datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, por las razones expuestas en la parte motiva.")
-
-    doc.add_paragraph("ARTÍCULO FINAL: RECURSOS. Contra la presente Resolución proceden los recursos de ley conforme al CPACA.")
-    doc.add_paragraph("\nNOTIFÍQUESE Y CÚMPLASE\n\n\nFirma Autorizada\nDirección de Prestaciones Económicas\nColpensiones")
-
-    # --- 4. ANEXO TÉCNICO: MIGRACIÓN DE LA HISTORIA LABORAL ---
-    doc.add_page_break()
-    doc.add_heading('ANEXO TÉCNICO: RESUMEN DE HISTORIA LABORAL (SANEADA)', level=1)
-    doc.add_paragraph("A continuación, se detalla el consolidado de los periodos laborados aplicando la regla de simultaneidad y el saneamiento normativo:")
+    # Integración de la Historia Laboral en la Parte Considerativa
+    doc.add_heading('ANÁLISIS DE LA HISTORIA LABORAL:', level=2)
+    doc.add_paragraph(f"Que, evaluada la trayectoria laboral del(la) señor(a) {datos_afi['nombre'].upper()}, se evidencia la siguiente densidad de aportes al Sistema General de Pensiones. En cumplimiento del artículo 18 de la Ley 100 de 1993, se aplicó la regla de simultaneidad, garantizando que para periodos concurrentes de cotización se acumulen los Ingresos Base de Cotización (IBC) sin que los días superen los 30 días mensuales o 360 anuales:")
 
     table = doc.add_table(rows=1, cols=5)
     table.style = 'Table Grid'
@@ -148,6 +102,60 @@ def generar_resolucion_word(datos_afi, liq, req, estatus_cumplido, archivos, pet
         row_cells[2].text = row['Hasta'].strftime('%d/%m/%Y') if pd.notnull(row['Hasta']) else ""
         row_cells[3].text = f"${row['IBC']:,.0f}"
         row_cells[4].text = f"{row['Semanas']:.2f}"
+        
+    doc.add_paragraph(f"\nTotal de semanas consolidadas y válidas: {liq['semanas']:,.2f} semanas.")
+
+    if estatus_cumplido:
+        doc.add_paragraph(f"Que, descendiendo al caso concreto, el(la) solicitante acreditó el cumplimiento de {req['edad']} años de edad y superó el umbral de semanas exigidas, consolidando el derecho pensional de manera satisfactoria.")
+        
+        doc.add_heading('LIQUIDACIÓN TÉCNICA DE LA PRESTACIÓN:', level=2)
+        doc.add_paragraph("CÁLCULO DEL INGRESO BASE DE LIQUIDACIÓN (IBL):")
+        doc.add_paragraph("De conformidad con lo dispuesto en el artículo 21 de la Ley 100 de 1993, el IBL se calcula indexando los salarios con base en el Índice de Precios al Consumidor (IPC) certificado por el DANE. Para garantizar el derecho al régimen más favorable al afiliado, se proyectaron los dos escenarios previstos en la norma:")
+        
+        doc.add_paragraph(f"• IBL indexado de los últimos 10 años cotizados: ${liq['ibl_10']:,.0f} COP.")
+        doc.add_paragraph(f"• IBL indexado de toda la vida laboral: ${liq['ibl_vida']:,.0f} COP.")
+        
+        doc.add_paragraph(f"En virtud de lo anterior, se determina como IBL más favorable el correspondiente a {liq['origen_ibl']}, por un valor definitivo de ${liq['ibl']:,.0f} COP.")
+        
+        f_data = liq['formula_tasa']
+        doc.add_paragraph("\nTASA DE REEMPLAZO (FÓRMULA DECRECIENTE LEY 797 DE 2003):")
+        doc.add_paragraph("El artículo 34 de la Ley 100 de 1993, modificado por el artículo 10 de la Ley 797 de 2003, establece que la tasa de reemplazo se calcula a través de la fórmula decreciente r = 65.50 - 0.50s, donde 's' corresponde al número de salarios mínimos legales mensuales vigentes (SMMLV) contenidos en el IBL. Adicionalmente, esta tasa se incrementa en un 1.5% por cada 50 semanas adicionales a las requeridas por ley, con un tope máximo del 80%.")
+        
+        doc.add_paragraph(
+            f"1. SMMLV de referencia para el cálculo: $1,750,905 COP.\n"
+            f"2. Proporción del IBL respecto al SMMLV (s): {f_data['s']:.2f} salarios mínimos.\n"
+            f"3. Aplicación de la fórmula base [65.50 - (0.50 * {f_data['s']:.2f})]: {f_data['tasa_base']:.2f}%\n"
+            f"4. Semanas adicionales cotizadas sobre el mínimo de ley: {f_data['semanas_adicionales']:.2f} semanas, equivalentes a {f_data['bloques']} bloque(s) completo(s) de 50 semanas.\n"
+            f"5. Incremento legal acumulado por bloques ({f_data['bloques']} x 1.5%): +{f_data['incremento']:.2f}%\n"
+            f"6. TASA DE REEMPLAZO FINAL DEFINITIVA: {f_data['tasa_final']:.2f}%"
+        )
+        doc.add_paragraph(f"LIQUIDACIÓN FINAL: Aplicando la tasa de reemplazo del {f_data['tasa_final']:.2f}% sobre el IBL de ${liq['ibl']:,.0f} COP, el valor de la mesada pensional asciende a ${liq['mesada']:,.0f} COP mensuales.")
+    else:
+        doc.add_paragraph("Que, descendiendo al caso concreto, el(la) solicitante NO CUMPLE con la totalidad de los requisitos exigidos por la norma para acceder a la Pensión de Vejez.")
+        
+        if liq['cumple_sem'] and not liq['cumple_edad']:
+            doc.add_paragraph(f"Si bien la historia laboral evidencia un total de {liq['semanas']:,.2f} semanas cotizadas, el(la) asegurado(a) NO ACREDITA el requisito de edad. A la fecha de radicación, no ha cumplido los {req['edad']} años de edad exigidos por el ordenamiento jurídico (Art. 33, Ley 100 de 1993, modificado por el Art. 9, Ley 797 de 2003) para el género {datos_afi['genero'].lower()}.")
+        elif liq['cumple_edad'] and not liq['cumple_sem']:
+            doc.add_paragraph(f"Si bien el(la) afiliado(a) acredita el requisito de edad ({req['edad']} años), a la fecha de corte cuenta únicamente con {liq['semanas']:,.2f} semanas, siendo insuficientes frente a las {req['semanas']} semanas requeridas por el ordenamiento.")
+        else:
+            doc.add_paragraph(f"El(la) afiliado(a) NO ACREDITA el requisito de edad ({req['edad']} años) ni el requisito de semanas cotizadas ({req['semanas']} exigidas), contando únicamente con {liq['semanas']:,.2f} semanas.")
+
+    # --- ANÁLISIS DE PETICIONES ADICIONALES ---
+    doc.add_heading('ANÁLISIS DE PETICIONES ADICIONALES:', level=2)
+    if estatus_cumplido:
+        doc.add_paragraph("Respecto a las demás pretensiones contenidas en el escrito petitorio, como la contabilización de periodos en 365 días y la exoneración de descuentos en salud, la Administradora precisa que el cálculo de la densidad de semanas se realiza conforme al parágrafo 2 del artículo 33 de la Ley 100 de 1993 y la jurisprudencia unificada, y los descuentos por salud son de carácter imperativo y de orden público (Art. 143 Ley 100 de 1993), procediendo a despachar estas peticiones accesorias conforme a estricto derecho.")
+    else:
+        doc.add_paragraph("En relación con las demás pretensiones esbozadas en el escrito petitorio (cómputo de 365 días, no aplicación de descuentos de salud, y declaración de estatus pensional), esta Entidad advierte que al no cumplirse los presupuestos normativos de causación para acceder a la prestación principal, las pretensiones accesorias corren la misma suerte y son despachadas desfavorablemente. Asimismo, se reitera que el cálculo de semanas y los descuentos de ley obedecen a un mandato legal que no puede ser inaplicado por la Administradora.")
+
+    # --- 3. RESUELVE ---
+    doc.add_heading('RESUELVE:', level=1)
+    if estatus_cumplido:
+        doc.add_paragraph(f"ARTÍCULO PRIMERO: RECONOCER Y ORDENAR EL PAGO de una Pensión de Vejez a favor de {datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, en cuantía de ${liq['mesada']:,.0f} COP mensuales, resolviendo de fondo lo pretendido.")
+    else:
+        doc.add_paragraph(f"ARTÍCULO PRIMERO: NEGAR el reconocimiento de la Pensión de Vejez y despachar desfavorablemente las peticiones elevadas por {datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, por las razones expuestas en la parte motiva.")
+
+    doc.add_paragraph("ARTÍCULO FINAL: RECURSOS. Contra la presente Resolución proceden los recursos de ley conforme a lo establecido en la Ley 1437 de 2011 (CPACA).")
+    doc.add_paragraph("\nNOTIFÍQUESE Y CÚMPLASE\n\n\nFirma Autorizada\nDirección de Prestaciones Económicas\nColpensiones")
 
     buffer = BytesIO()
     doc.save(buffer)
@@ -194,7 +202,6 @@ with mod1:
     st.session_state.archivos_cargados['resoluciones'] = len(resoluciones_files) if resoluciones_files else 0
     st.session_state.archivos_cargados['peticion'] = True if peticion_file else False
 
-    # Botón explícito para cruzar datos y evitar recargas infinitas
     if st.button("Procesar Archivos para Extraer Datos Básicos y Peticiones", type="primary"):
         datos_temp = {"cedula": "", "nombre": "", "fecha_nac": date(1975, 1, 1), "genero": "Masculino"}
         
@@ -273,6 +280,7 @@ with mod3:
             liq = LiquidadorPension(df_f, genero, fecha_nac)
             fechas = liq.determinar_fechas_clave()
             
+            # --- CÁLCULO DE IBL ---
             ibl_10, _ = liq.calcular_ibl_indexado(fechas['fecha_corte'], "ultimos_10")
             ibl_vida, _ = liq.calcular_ibl_indexado(fechas['fecha_corte'], "toda_vida")
             ibl_def = max(ibl_10, ibl_vida)
@@ -293,8 +301,10 @@ with mod3:
             cumple_sem = total_sem >= sem_req
             reconoce = cumple_edad and cumple_sem
 
+            # --- ACTUALIZACIÓN ESTADO: Se guardan ibl_10 e ibl_vida ---
             st.session_state.liq_resultados = {
                 "semanas": total_sem, "ibl": ibl_def, "origen_ibl": origen_ibl, "mesada": mesada,
+                "ibl_10": ibl_10, "ibl_vida": ibl_vida,
                 "formula_tasa": {"s": s, "tasa_base": tasa_base, "semanas_adicionales": sem_adicionales, "bloques": bloques, "incremento": incremento, "tasa_final": tasa},
                 "edad_req": edad_req, "sem_req": sem_req, "nota_req": nota_req, "reconoce": reconoce,
                 "cumple_edad": cumple_edad,
@@ -334,7 +344,7 @@ with mod4:
         c4.metric("Sentido del Acto", estado_texto, delta_color="normal" if r['reconoce'] else "inverse")
 
         st.divider()
-        st.write("Generando acto administrativo con las consideraciones jurídicas correspondientes y Anexo Técnico de la Historia Laboral...")
+        st.write("Generando acto administrativo con las consideraciones jurídicas correspondientes y detalle de la liquidación...")
         
         req_data = {"edad": r['edad_req'], "semanas": r['sem_req'], "nota": r['nota_req']}
         datos_afi = {
@@ -355,7 +365,7 @@ with mod4:
         )
         
         st.download_button(
-            label=f"📥 DESCARGAR RESOLUCIÓN Y ANEXO ({estado_texto})",
+            label=f"📥 DESCARGAR RESOLUCIÓN ({estado_texto})",
             data=docx_buffer,
             file_name=f"Resolucion_{estado_texto}_{st.session_state.datos_basicos['cedula']}.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
