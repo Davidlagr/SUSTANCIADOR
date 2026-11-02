@@ -20,6 +20,8 @@ if 'df_final' not in st.session_state: st.session_state.df_final = None
 if 'liq_resultados' not in st.session_state: st.session_state.liq_resultados = None
 if 'archivos_cargados' not in st.session_state: st.session_state.archivos_cargados = {"resoluciones": 0, "peticion": False}
 if 'peticiones_texto' not in st.session_state: st.session_state.peticiones_texto = "Reconocimiento de Pensión de Vejez."
+if 'banco_motivas' not in st.session_state: st.session_state.banco_motivas = pd.DataFrame(columns=["Categoria", "Palabras_Clave", "Texto_Motiva"])
+if 'motivas_aplicables' not in st.session_state: st.session_state.motivas_aplicables = []
 
 # --- REQUISITOS EN TIEMPO REAL ---
 def get_requisitos_estatus(genero, fecha_estatus, fecha_cumple_edad=None):
@@ -47,7 +49,7 @@ def get_requisitos_estatus(genero, fecha_estatus, fecha_cumple_edad=None):
 # ==========================================
 # MOTOR GENERADOR DEL ACTO ADMINISTRATIVO
 # ==========================================
-def generar_resolucion_word(datos_afi, liq, req, estatus_cumplido, archivos, peticiones_texto, df_historia):
+def generar_resolucion_word(datos_afi, liq, req, estatus_cumplido, archivos, peticiones_texto, df_historia, motivas_dinamicas):
     doc = Document()
     style = doc.styles['Normal']
     style.font.name = 'Arial'
@@ -140,12 +142,17 @@ def generar_resolucion_word(datos_afi, liq, req, estatus_cumplido, archivos, pet
         else:
             doc.add_paragraph(f"El(la) afiliado(a) NO ACREDITA el requisito de edad ({req['edad']} años) ni el requisito de semanas cotizadas ({req['semanas']} exigidas), contando únicamente con {liq['semanas']:,.2f} semanas.")
 
-    # --- ANÁLISIS DE PETICIONES ADICIONALES ---
-    doc.add_heading('ANÁLISIS DE PETICIONES ADICIONALES:', level=2)
-    if estatus_cumplido:
-        doc.add_paragraph("Respecto a las demás pretensiones contenidas en el escrito petitorio, como la contabilización de periodos en 365 días y la exoneración de descuentos en salud, la Administradora precisa que el cálculo de la densidad de semanas se realiza conforme al parágrafo 2 del artículo 33 de la Ley 100 de 1993 y la jurisprudencia unificada, y los descuentos por salud son de carácter imperativo y de orden público (Art. 143 Ley 100 de 1993), procediendo a despachar estas peticiones accesorias conforme a estricto derecho.")
+    # --- ANÁLISIS DE PETICIONES Y MOTIVAS ADICIONALES ---
+    doc.add_heading('ANÁLISIS DE PETICIONES Y MOTIVAS ADICIONALES:', level=2)
+    
+    if motivas_dinamicas:
+        for motiva in motivas_dinamicas:
+            doc.add_paragraph(motiva['Texto'])
     else:
-        doc.add_paragraph("En relación con las demás pretensiones esbozadas en el escrito petitorio (cómputo de 365 días, no aplicación de descuentos de salud, y declaración de estatus pensional), esta Entidad advierte que al no cumplirse los presupuestos normativos de causación para acceder a la prestación principal, las pretensiones accesorias corren la misma suerte y son despachadas desfavorablemente. Asimismo, se reitera que el cálculo de semanas y los descuentos de ley obedecen a un mandato legal que no puede ser inaplicado por la Administradora.")
+        if estatus_cumplido:
+            doc.add_paragraph("Respecto a las demás pretensiones accesorias contenidas en el escrito petitorio, la Administradora precisa que se procede a despacharlas conforme a estricto derecho y al ordenamiento legal vigente.")
+        else:
+            doc.add_paragraph("En relación con las demás pretensiones esbozadas, esta Entidad advierte que al no cumplirse los presupuestos normativos de causación para acceder a la prestación principal, las accesorias corren la misma suerte y son despachadas desfavorablemente.")
 
     # --- 3. RESUELVE ---
     doc.add_heading('RESUELVE:', level=1)
@@ -177,13 +184,15 @@ with st.sidebar:
         st.session_state.liq_resultados = None
         st.session_state.archivos_cargados = {"resoluciones": 0, "peticion": False}
         st.session_state.peticiones_texto = "Reconocimiento de Pensión de Vejez."
+        st.session_state.motivas_aplicables = []
         st.rerun()
 
-mod1, mod2, mod3, mod4 = st.tabs([
+mod1, mod2, mod3, mod4, mod5 = st.tabs([
     "Módulo 1: Datos Básicos", 
     "Módulo 2: Historia Laboral", 
     "Módulo 3: Liquidación", 
-    "Módulo 4: Sustanciación"
+    "Módulo 4: Sustanciación",
+    "Módulo 5: Análisis de Motivas"
 ])
 
 # ------------------------------------------
@@ -301,7 +310,6 @@ with mod3:
             cumple_sem = total_sem >= sem_req
             reconoce = cumple_edad and cumple_sem
 
-            # --- ACTUALIZACIÓN ESTADO: Se guardan ibl_10 e ibl_vida ---
             st.session_state.liq_resultados = {
                 "semanas": total_sem, "ibl": ibl_def, "origen_ibl": origen_ibl, "mesada": mesada,
                 "ibl_10": ibl_10, "ibl_vida": ibl_vida,
@@ -361,7 +369,8 @@ with mod4:
             r['reconoce'], 
             st.session_state.archivos_cargados,
             st.session_state.peticiones_texto,
-            st.session_state.df_final
+            st.session_state.df_final,
+            st.session_state.motivas_aplicables
         )
         
         st.download_button(
@@ -374,3 +383,58 @@ with mod4:
         )
     else:
         st.warning("Complete la Liquidación en el Módulo 3 para generar el acto administrativo.")
+
+# ------------------------------------------
+# MÓDULO 5: ANÁLISIS DE MOTIVAS
+# ------------------------------------------
+with mod5:
+    st.header("🔍 Asistente de Motivas Jurídicas")
+    st.info("Este módulo lee la petición del ciudadano y sugiere los párrafos resolutivos basados en un banco de datos dinámico.")
+    
+    col_banco1, col_banco2 = st.columns([1, 2])
+    
+    with col_banco1:
+        st.subheader("Cargar o Actualizar Banco")
+        archivo_banco = st.file_uploader("Subir archivo de motivas (CSV)", type=["csv"])
+        if archivo_banco:
+            try:
+                df_banco = pd.read_csv(archivo_banco, sep=';')
+                st.session_state.banco_motivas = df_banco
+                st.success(f"Banco actualizado: {len(df_banco)} motivas en memoria.")
+            except Exception as e:
+                st.error(f"Error al leer el archivo. Verifique que sea CSV separado por ';'. Detalles: {e}")
+                
+    with col_banco2:
+        st.subheader("Banco de Motivas Activo")
+        st.dataframe(st.session_state.banco_motivas, use_container_width=True, height=200)
+
+    st.divider()
+    
+    st.subheader("Análisis del Escrito Petitorio")
+    st.write(f"**Petición capturada:** {st.session_state.peticiones_texto}")
+    
+    if st.button("Buscar Motivas Aplicables al Caso", type="primary"):
+        peticion_lower = str(st.session_state.peticiones_texto).lower()
+        motivas_encontradas = []
+        
+        for _, fila in st.session_state.banco_motivas.iterrows():
+            claves = [p.strip().lower() for p in str(fila['Palabras_Clave']).split(',')]
+            if any(clave in peticion_lower for clave in claves if clave):
+                motivas_encontradas.append({
+                    "Categoria": fila['Categoria'],
+                    "Texto": fila['Texto_Motiva']
+                })
+                
+        st.session_state.motivas_aplicables = motivas_encontradas
+        if not motivas_encontradas:
+            st.warning("No se encontraron coincidencias entre la petición y las palabras clave del banco.")
+
+    if st.session_state.motivas_aplicables:
+        st.success(f"Se identificaron {len(st.session_state.motivas_aplicables)} motivas aplicables.")
+        for i, m in enumerate(st.session_state.motivas_aplicables):
+            st.session_state.motivas_aplicables[i]['Texto'] = st.text_area(
+                label=f"Motiva sugerida: {m['Categoria']}", 
+                value=m['Texto'], 
+                height=100, 
+                key=f"edit_motiva_{i}"
+            )
