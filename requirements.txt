@@ -3,4 +3,5 @@ pandas
 numpy
 python-docx
 pdfplumber
-matplotlib
+pytesseract
+Pillow
