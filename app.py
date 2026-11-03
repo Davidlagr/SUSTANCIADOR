@@ -385,7 +385,7 @@ with mod5:
                 use_container_width=True
             )
 
-    # --------------------------------
+        # --------------------------------
     # PESTAÑA 2: FÓRMULA DECRECIENTE
     # --------------------------------
     with t_formula:
@@ -405,21 +405,27 @@ with mod5:
             t_base = max(55.0, min(65.5 - (0.5 * s), 65.5))
             sem_extra = max(0, val_semanas - val_req)
             bloques_extra = int(sem_extra // 50)
-            incremento = bloques_extra * 1.5
-            t_total = min(80.0, t_base + incremento) # Tope legal
+            
+            # Cálculo del incremento y aplicación del límite estricto de 15 puntos
+            incremento_bruto = bloques_extra * 1.5
+            incremento_legal = min(incremento_bruto, 15.0)
+            t_total = min(80.0, t_base + incremento_legal) 
+            
+            texto_limite = ""
+            if incremento_bruto > 15.0:
+                texto_limite = f" (Valor limitado a 15.00%, en razón a que la norma jurídica solo contempla un aumento máximo de 15 puntos)"
             
             explicacion = (
                 f"Respecto a la aplicación de la tasa de reemplazo, esta Administradora procedió conforme al artículo 34 de la Ley 100 de 1993, modificado por el artículo 10 de la Ley 797 de 2003, aplicando la fórmula decreciente de la siguiente manera:\n\n"
                 f"1. Relación IBL/SMMLV (s): ${val_ibl:,.0f} / ${val_smmlv:,.0f} = {s:.2f} salarios mínimos.\n"
                 f"2. Tasa base [65.5 - (0.5 x {s:.2f})]: {t_base:.2f}%.\n"
                 f"3. Semanas adicionales cotizadas sobre las {val_req} mínimas de ley: {sem_extra:.2f} semanas, lo que equivale a {bloques_extra} bloque(s) completo(s) de 50 semanas.\n"
-                f"4. Incremento legal por semanas adicionales ({bloques_extra} bloques x 1.5%): +{incremento:.2f}%.\n"
-                f"5. Tasa de reemplazo final calculada: {t_base + incremento:.2f}%, la cual, en cumplimiento estricto del inciso normativo que establece que 'el monto máximo de la pensión no podrá ser superior al 80% del ingreso base de liquidación', se ajusta al tope de {t_total:.2f}%.\n\n"
-                f"Por tanto, la liquidación de la prestación económica se encuentra ajustada a los mandatos imperativos de la Ley 797 de 2003."
+                f"4. Incremento legal por semanas adicionales ({bloques_extra} bloques x 1.5%): +{incremento_legal:.2f}%{texto_limite}.\n"
+                f"5. Tasa de reemplazo final calculada: {t_base + incremento_legal:.2f}%, la cual, en estricto cumplimiento del tope normativo que determina que 'el monto máximo de la pensión no podrá ser superior al 80% del ingreso base de liquidación', se fija en {t_total:.2f}%.\n\n"
+                f"Por tanto, la liquidación de la prestación económica se encuentra ajustada a los mandatos imperativos de la Ley 797 de 2003, la cual establece de forma perentoria que la sumatoria de puntos porcentuales por semanas adicionales tiene un tope máximo legal de 15 puntos."
             )
             
-            # Se muestra en un text_area para que el usuario pueda copiarla o editarla
-            st.session_state.texto_formula_generada = st.text_area("Explicación Matemática de la Fórmula", value=explicacion, height=280)
+            st.session_state.texto_formula_generada = st.text_area("Explicación Matemática de la Fórmula", value=explicacion, height=300)
 
     # --------------------------------
     # PESTAÑA 3: BANCO DE DATOS
