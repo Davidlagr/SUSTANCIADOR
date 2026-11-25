@@ -432,16 +432,22 @@ with mod2:
         df = st.session_state.df_crudo
         cols = df.columns.tolist()
 
+        def idx_col(nombre_esperado, fallback):
+            return cols.index(nombre_esperado) if nombre_esperado in cols else min(fallback, len(cols) - 1)
+
+        with st.expander("👁️ Ver tabla cruda extraída del PDF (verificación de NIT y Razón Social)", expanded=False):
+            st.dataframe(df, use_container_width=True)
+
         st.write("**Mapeo de columnas detectadas:**")
         r1c1, r1c2 = st.columns(2)
-        c_nit = r1c1.selectbox("Columna 'NIT / ID Aportante'", cols, index=0)
-        c_ap = r1c2.selectbox("Columna 'Nombre / Razón Social Aportante'", cols, index=1 if len(cols) > 1 else 0)
+        c_nit = r1c1.selectbox("Columna 'NIT / ID Aportante'", cols, index=idx_col("Identificación Aportante", 0))
+        c_ap = r1c2.selectbox("Columna 'Nombre / Razón Social Aportante'", cols, index=idx_col("Nombre o Razón Social", 1))
 
         c1, c2, c3, c4 = st.columns(4)
-        cd = c1.selectbox("Columna 'Desde'", cols, index=2 if len(cols) > 2 else 0)
-        ch = c2.selectbox("Columna 'Hasta'", cols, index=3 if len(cols) > 3 else 0)
-        ci = c3.selectbox("Columna 'IBC'", cols, index=4 if len(cols) > 4 else 0)
-        cs = c4.selectbox("Columna 'Semanas'", cols, index=len(cols) - 1)
+        cd = c1.selectbox("Columna 'Desde'", cols, index=idx_col("Desde", 2))
+        ch = c2.selectbox("Columna 'Hasta'", cols, index=idx_col("Hasta", 3))
+        ci = c3.selectbox("Columna 'IBC'", cols, index=idx_col("Último Salario", 4))
+        cs = c4.selectbox("Columna 'Semanas'", cols, index=idx_col("Total", len(cols) - 1))
 
         if st.button("Ejecutar Saneamiento, Simultaneidad y Validación de Empleador", type="primary"):
             clean = limpiar_y_estandarizar(df, cd, ch, ci, cs, col_nit=c_nit, col_aportante=c_ap)
@@ -466,8 +472,12 @@ with mod2:
 
         if st.session_state.df_final is not None:
             st.write("### Base Consolidada de Cotizaciones")
+            df_vista = st.session_state.df_final.rename(columns={
+                "NIT_Aportante": "Identificación Aportante",
+                "Aportante": "Nombre o Razón Social"
+            })
             st.dataframe(
-                st.session_state.df_final.style.format({'IBC': "${:,.0f}", 'Semanas': "{:.2f}"}),
+                df_vista.style.format({'IBC': "${:,.0f}", 'Semanas': "{:.2f}"}),
                 use_container_width=True
             )
     else:
