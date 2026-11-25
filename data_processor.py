@@ -98,7 +98,6 @@ COLUMNAS_RESUMEN = [
 # UTILIDADES DE LECTURA Y LIMPIEZA COLPENSIONES
 # ==========================================
 def _limpiar_texto_colpensiones(texto):
-    """Normaliza espacios y corrige artefactos típicos de codificación en reportes Colpensiones."""
     if not texto:
         return ""
     t = str(texto)
@@ -109,12 +108,34 @@ def _limpiar_texto_colpensiones(texto):
 
 
 def _limpiar_id_aportante(val):
-    """Extrae únicamente dígitos del NIT/Cédula del aportante."""
     return re.sub(r'\D', '', str(val or ''))
 
 
+def _separar_id_y_nombre(texto):
+    """Separa NIT/ID y Razón Social aunque vengan pegados sin espacio o con prefijo (NI, CC, NIT)."""
+    t = _limpiar_texto_colpensiones(texto)
+    if not t:
+        return "(Sin ID)", ""
+
+    m = re.match(
+        r'^(?:(?:NIT|NI|CC|CE|TI)[\s:\.\-]*)?(\d[\d\.\-]{3,15})(?:\s+|(?=[A-ZÑÁÉÍÓÚ]))(.*)$',
+        t,
+        re.IGNORECASE
+    )
+    if m:
+        nit = _limpiar_id_aportante(m.group(1))
+        nom = _limpiar_texto_colpensiones(m.group(2))
+        if nit:
+            return nit, nom
+
+    m2 = re.match(r'^(\d{2}\s+\d{4}\s+\d{3,6})\s+(.*)$', t)
+    if m2:
+        return _limpiar_id_aportante(m2.group(1)), _limpiar_texto_colpensiones(m2.group(2))
+
+    return "(Sin ID)", t
+
+
 def _extraer_texto_pagina_con_ocr(page):
-    """Extrae texto nativo de una página PDF; si viene como imagen, aplica OCR automáticamente."""
     text = page.extract_text(layout=False) or ""
     if len(text.strip()) >= 40:
         return text, False
@@ -130,10 +151,6 @@ def _extraer_texto_pagina_con_ocr(page):
 
 
 def _extraer_catalogo_nombres_detalle(full_text, tablas_detalle=None):
-    """
-    Construye un mapa {ID_Aportante: Nombre_Completo} leyendo el Detalle Post-1995 ([34]/[35])
-    y Tiempos Públicos ([47]/[48]) para completar los nombres truncados a 20 chars del Resumen.
-    """
     mapa = {}
 
     def registrar(nit_raw, nom_raw):
@@ -141,7 +158,6 @@ def _extraer_catalogo_nombres_detalle(full_text, tablas_detalle=None):
         if not (5 <= len(nit) <= 12):
             return
         nom = _limpiar_texto_colpensiones(nom_raw)
-        # Eliminar restos de columnas contiguas ([36] RA: SI/NO, [37] Periodo: YYYYMM)
         nom = re.sub(r'\b(?:SI|NO)\b(?:\s+(?:19|20)\d{4})?', '', nom)
         nom = re.sub(r'\b(?:19|20)\d{2}(?:0[1-9]|1[0-2])\b', '', nom)
         nom = re.sub(r'\s+', ' ', nom).strip(" -|")
@@ -154,7 +170,6 @@ def _extraer_catalogo_nombres_detalle(full_text, tablas_detalle=None):
         if len(nom) > len(mapa.get(nit, "")):
             mapa[nit] = nom
 
-    # 1. Desde tablas nativas del Detalle
     if tablas_detalle:
         for tabla in tablas_detalle:
             for fila in tabla:
@@ -173,19 +188,16 @@ def _extraer_catalogo_nombres_detalle(full_text, tablas_detalle=None):
                         paso = len(lineas_nom) // len(nits)
                         registrar(nits[0], " ".join(lineas_nom[:paso]))
 
-    # 2. Respaldo desde texto plano / OCR del Detalle Post-1995
     upper_full = full_text.upper()
     idx_det = upper_full.find("DETALLE DE PAGOS EFECTUADOS A PARTIR DE 1995")
     texto_det = full_text[idx_det:] if idx_det != -1 else full_text
 
-    # En texto plano/OCR una fila del detalle puede ocupar 1 o 2 líneas antes de SI/NO + YYYYMM
     pat_det = re.compile(
         r'(?:^|\n)\s*(\d{5,12})\s+([A-ZÑÁÉÍÓÚÃ0-9\.\,\-\s/&]{3,80}?)\s+(?:SI|NO|S1|N0)\s+(?:19|20)\d{2}(?:0[1-9]|1[0-2])\b'
     )
     for m in pat_det.finditer(texto_det):
         registrar(m.group(1), m.group(2))
 
-    # Variación donde el orden en OCR invierte Periodo y SI/NO (ej. "... 202206 SI")
     pat_det_alt = re.compile(
         r'(?:^|\n)\s*(\d{5,12})\s+([A-ZÑÁÉÍÓÚÃ0-9\.\,\-\s/&]{3,80}?)\s+(?:19|20)\d{2}(?:0[1-9]|1[0-2])\s+(?:SI|NO)\b'
     )
@@ -196,18 +208,11 @@ def _extraer_catalogo_nombres_detalle(full_text, tablas_detalle=None):
 
 
 def _desdoblar_fila_tabla_resumen(fila):
-    """
-    Normaliza una fila extraída por pdfplumber.extract_tables() del Resumen Colpensiones.
-    Soporta columnas vacías intermedias (como ocurre entre [5] Salario y [6] Semanas en pág. 1)
-    y celdas multilínea donde dos periodos vienen agrupados con '\n'.
-    """
     celdas = [str(c).strip() if c is not None else "" for c in fila]
-    # Eliminar columnas completamente vacías
     celdas_no_vacias = [c for c in celdas if c != ""]
     if len(celdas_no_vacias) < 6:
         return []
 
-    # Ubicar las dos celdas que contienen fechas DD/MM/YYYY
     regex_fecha = re.compile(r'\d{2}/\d{2}/\d{4}')
     idx_fechas = [i for i, c in enumerate(celdas_no_vacias) if regex_fecha.search(c)]
     if len(idx_fechas) < 2:
@@ -217,7 +222,6 @@ def _desdoblar_fila_tabla_resumen(fila):
     if i_desde < 1:
         return []
 
-    # Desdoblar si hay múltiples fechas en la misma celda (filas pegadas por '\n')
     fechas_desde = regex_fecha.findall(celdas_no_vacias[i_desde])
     fechas_hasta = regex_fecha.findall(celdas_no_vacias[i_hasta])
     n_sub = min(len(fechas_desde), len(fechas_hasta))
@@ -230,29 +234,22 @@ def _desdoblar_fila_tabla_resumen(fila):
             return partes
         if n == 1:
             return [" ".join(partes)]
-        # Rellenar con el último valor si había un solo elemento para varias subfilas
         if len(partes) == 1:
             return partes * n
         return (partes + [partes[-1]] * n)[:n]
 
     if i_desde == 1:
-        # Caso donde ID y Nombre quedaron fusionados en la celda 0
         bloques_0 = dividir_campo(celdas_no_vacias[0], n_sub)
         ids_list, noms_list = [], []
         for b in bloques_0:
-            m_sep = re.match(r'^([\d\.\-]{5,15})\s+(.*)$', b)
-            if m_sep:
-                ids_list.append(m_sep.group(1))
-                noms_list.append(m_sep.group(2))
-            else:
-                ids_list.append("")
-                noms_list.append(b)
+            nit_b, nom_b = _separar_id_y_nombre(b)
+            ids_list.append(nit_b)
+            noms_list.append(nom_b)
     else:
         ids_list = dividir_campo(celdas_no_vacias[0], n_sub)
         noms_list = dividir_campo(" ".join(celdas_no_vacias[1:i_desde]), n_sub)
 
     resto = celdas_no_vacias[i_hasta + 1:]
-    # Se esperan 5 campos después de Hasta: [5] Salario, [6] Semanas, [7] Lic, [8] Sim, [9] Total
     salarios = dividir_campo(resto[0], n_sub) if len(resto) > 0 else ["0"] * n_sub
     semanas = dividir_campo(resto[1], n_sub) if len(resto) > 1 else ["0"] * n_sub
     lics = dividir_campo(resto[2], n_sub) if len(resto) > 2 else ["0"] * n_sub
@@ -278,15 +275,10 @@ def _desdoblar_fila_tabla_resumen(fila):
 
 
 def _parsear_linea_resumen_texto(linea):
-    """
-    Parsea una línea de texto/OCR del formato Colpensiones Resumen:
-    [1] ID  [2] Nombre o Razón Social  [3] Desde  [4] Hasta  [5] Salario  [6] Semanas  [7] Lic  [8] Sim  [9] Total
-    """
     linea = linea.replace("|", " ").strip()
     if not linea:
         return None
 
-    # Descartar encabezados o pies de página
     upper = linea.upper()
     if any(skip in upper for skip in [
         "IDENTIFICACION APORTANTE", "IDENTIFICACIÓN APORTANTE",
@@ -294,57 +286,69 @@ def _parsear_linea_resumen_texto(linea):
     ]):
         return None
 
-    pat_completo = re.compile(
-        r'^\s*(\d[\d\.\-]{4,14})\s+'                    # [1] Identificación Aportante
-        r'(.+?)\s+'                                      # [2] Nombre o Razón Social
-        r'(\d{2}/\d{2}/\d{4})\s+'                        # [3] Desde
-        r'(\d{2}/\d{2}/\d{4})\s+'                        # [4] Hasta
-        r'(\$?\s*[\d\.\,]+\s*\$?)\s+'                    # [5] Último Salario ($ antes o después)
-        r'([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s*$'  # [6]Sem [7]Lic [8]Sim [9]Total
-    )
-    m = pat_completo.match(linea)
-    if m:
-        g = list(m.groups())
-        g[0] = _limpiar_id_aportante(g[0])
-        g[1] = _limpiar_texto_colpensiones(g[1])
-        return g
-
-    # Respaldo flexible si el OCR omitió alguna columna numérica final o el signo $
     fechas = re.findall(r'\d{2}/\d{2}/\d{4}', linea)
-    if len(fechas) >= 2:
-        try:
-            p_antes, resto_1 = linea.split(fechas[0], 1)
-            _, p_despues = resto_1.split(fechas[1], 1)
-            p_antes = p_antes.strip()
-            m_id = re.match(r'^([\d\.\-]{5,15})\s+(.*)$', p_antes)
-            if m_id:
-                nit = _limpiar_id_aportante(m_id.group(1))
-                nom = _limpiar_texto_colpensiones(m_id.group(2))
-            else:
-                nit = "(Sin ID)"
-                nom = _limpiar_texto_colpensiones(p_antes)
+    if len(fechas) < 2:
+        return None
 
-            # Unir "$ 497.000" -> "$497.000" antes de dividir por espacios
-            p_despues = re.sub(r'\$\s+([\d\.\,]+)', r'$\1', p_despues.strip())
-            tokens = [t for t in re.split(r'\s+', p_despues) if t]
-            if len(tokens) >= 2:
-                salario = tokens[0]
-                sem = tokens[1] if len(tokens) > 1 else "0"
-                lic = tokens[2] if len(tokens) > 2 else "0"
-                sim = tokens[3] if len(tokens) > 3 else "0"
-                tot = tokens[4] if len(tokens) > 4 else sem
-                return [nit, nom, fechas[0], fechas[1], salario, sem, lic, sim, tot]
-        except Exception:
-            return None
+    try:
+        p_antes, resto_1 = linea.split(fechas[0], 1)
+        _, p_despues = resto_1.split(fechas[1], 1)
+        nit, nom = _separar_id_y_nombre(p_antes)
+
+        # Solo unir "$ 497.000" si el signo $ está al inicio o precedido por espacio
+        p_despues = re.sub(r'(?:^|(?<=\s))\$\s+([\d\.\,]+)', r'$\1', p_despues.strip())
+        tokens = [t for t in re.split(r'\s+', p_despues) if t]
+        if len(tokens) >= 2:
+            salario = tokens[0]
+            sem = tokens[1] if len(tokens) > 1 else "0"
+            lic = tokens[2] if len(tokens) > 2 else "0"
+            sim = tokens[3] if len(tokens) > 3 else "0"
+            tot = tokens[4] if len(tokens) > 4 else sem
+            return [nit, nom, fechas[0], fechas[1], salario, sem, lic, sim, tot]
+    except Exception:
+        return None
 
     return None
+
+
+def _extraer_filas_resumen_desde_texto(full_text):
+    upper_full = full_text.upper()
+    idx_ini = upper_full.find("RESUMEN DE SEMANAS COTIZADAS POR EMPLEADOR")
+    if idx_ini == -1:
+        idx_ini = upper_full.find("IDENTIFICACIÓN APORTANTE")
+    if idx_ini == -1:
+        idx_ini = upper_full.find("IDENTIFICACION APORTANTE")
+
+    marcadores_fin = [
+        "RESUMEN TIEMPO PÚBLICO SIMULTÁNEO",
+        "RESUMEN TIEMPO PUBLICO SIMULTANEO",
+        "DETALLE DE PAGOS EFECTUADOS ANTERIORES",
+        "DETALLE DE PAGOS EFECTUADOS A PARTIR DE 1995",
+        "LECTURA DEL REPORTE DE LA HISTORIA LABORAL"
+    ]
+    idx_fin = -1
+    for mf in marcadores_fin:
+        pos = upper_full.find(mf, max(0, idx_ini))
+        if pos != -1 and (idx_fin == -1 or pos < idx_fin):
+            idx_fin = pos
+
+    if idx_ini != -1:
+        texto_resumen = full_text[idx_ini:idx_fin] if idx_fin != -1 else full_text[idx_ini:]
+    else:
+        texto_resumen = full_text
+
+    filas = []
+    for linea in texto_resumen.splitlines():
+        parsed = _parsear_linea_resumen_texto(linea)
+        if parsed:
+            filas.append(parsed)
+    return filas
 
 
 # ==========================================
 # DETECTOR DE EMPLEADOR PÚBLICO Y SEM >= 90%
 # ==========================================
 def clasificar_empleador_publico(nit_raw, nombre_raw):
-    """Evalúa si un empleador pertenece al sector público o SEM >= 90% estatal."""
     nit_limpio = _limpiar_id_aportante(nit_raw)
     nit_9 = nit_limpio[:9] if len(nit_limpio) >= 9 else nit_limpio
 
@@ -366,7 +370,6 @@ def clasificar_empleador_publico(nit_raw, nombre_raw):
 
 
 def identificar_ultimo_empleador_publico(df_limpio):
-    """Identifica el aportante más reciente en la historia laboral y verifica si es público."""
     resultado_base = {
         "es_publico": False,
         "nit": "No identificado",
@@ -380,7 +383,6 @@ def identificar_ultimo_empleador_publico(df_limpio):
     fecha_max = df_limpio['Hasta'].max()
     ultimos = df_limpio[df_limpio['Hasta'] == fecha_max]
 
-    # Si hubo simultaneidad en el último periodo, priorizar si alguno es entidad pública
     for _, row in ultimos.iterrows():
         nit_val = str(row.get('NIT_Aportante', '')).strip()
         nom_val = str(row.get('Aportante', '')).strip()
@@ -408,10 +410,6 @@ def identificar_ultimo_empleador_publico(df_limpio):
 # EXTRACCIÓN DE DATOS BÁSICOS Y PETICIÓN
 # ==========================================
 def extraer_datos_basicos(pdf_file):
-    """
-    Extrae cédula, nombre, fecha de nacimiento y sexo (si existe)
-    del encabezado del Reporte de Semanas Cotizadas de Colpensiones (nativo u OCR).
-    """
     datos = {
         "cedula": "",
         "nombre": "",
@@ -424,7 +422,6 @@ def extraer_datos_basicos(pdf_file):
                 p0 = pdf.pages[0]
                 text, _ = _extraer_texto_pagina_con_ocr(p0)
 
-                # 1. Intentar desde tabla de cabecera si es PDF nativo
                 try:
                     tablas_p0 = p0.extract_tables() or []
                     for tbl in tablas_p0[:2]:
@@ -449,14 +446,12 @@ def extraer_datos_basicos(pdf_file):
                 except Exception:
                     pass
 
-                # 2. Respaldo / complemento sobre texto plano o OCR
                 if text:
                     if not datos["cedula"]:
                         m_ced = re.search(r'(?:Número de Documento|Documento|C\.C\.)[\s:\n|]*([\d\.]{6,15})', text, re.IGNORECASE)
                         if m_ced:
                             datos["cedula"] = m_ced.group(1).replace(".", "").strip()
                         else:
-                            # En el formato Colpensiones, el número aparece justo debajo de "Cédula de Ciudadanía"
                             m_ced2 = re.search(r'C[ée]dula\s+de\s+Ciudadan[íi]a[\s\S]{0,80}?\b(\d{6,12})\b', text, re.IGNORECASE)
                             if m_ced2:
                                 datos["cedula"] = m_ced2.group(1)
@@ -468,7 +463,6 @@ def extraer_datos_basicos(pdf_file):
                             if not any(x in cand.upper() for x in ["DIRECCION", "RAZON SOCIAL", "APORTANTE"]):
                                 datos["nombre"] = cand
                         if not datos["nombre"] and datos["cedula"]:
-                            # En el formato Colpensiones el nombre completo figura justo después del número de cédula
                             m_nom2 = re.search(rf'{re.escape(datos["cedula"])}\s*\n\s*([A-ZÑÁÉÍÓÚ]{{2,}}(?:\s+[A-ZÑÁÉÍÓÚ]{{2,}}){{1,5}})', text)
                             if m_nom2:
                                 datos["nombre"] = _limpiar_texto_colpensiones(m_nom2.group(1))
@@ -489,7 +483,6 @@ def extraer_datos_basicos(pdf_file):
 
 
 def extraer_datos_peticion(pdf_file, datos_actuales):
-    """Rescata datos básicos faltantes desde la petición y extrae el bloque de pretensiones."""
     peticiones = "Reconocimiento de Pensión de Vejez."
     try:
         with pdfplumber.open(pdf_file) as pdf:
@@ -542,12 +535,7 @@ def extraer_datos_peticion(pdf_file, datos_actuales):
 # EXTRACCIÓN DE TABLA RESUMEN + ENRIQUECIMIENTO DE NOMBRES
 # ==========================================
 def extraer_tabla_cruda(archivo_pdf):
-    """
-    Extrae el Resumen de Semanas Cotizadas por Empleador (y Tiempos Públicos si existen),
-    separando limpiamente [1] Identificación Aportante y [2] Nombre o Razón Social,
-    y completando los nombres truncados usando [34]/[35] del Detalle Post-1995.
-    """
-    filas_resumen = []
+    filas_tabla = []
     tablas_detalle = []
     full_text_paginas = []
     en_resumen = True
@@ -574,7 +562,6 @@ def extraer_tabla_cruda(archivo_pdf):
             if es_pagina_detalle and not es_pagina_resumen:
                 en_resumen = False
 
-            # 1. Intentar extracción por tablas nativas (solo si no requirió OCR)
             if not uso_ocr:
                 tablas = page.extract_tables() or []
                 for tbl in tablas:
@@ -588,47 +575,26 @@ def extraer_tabla_cruda(archivo_pdf):
                     if en_resumen or es_pagina_resumen:
                         for fila in tbl:
                             subfilas = _desdoblar_fila_tabla_resumen(fila)
-                            filas_resumen.extend(subfilas)
+                            filas_tabla.extend(subfilas)
 
     full_text = "\n".join(full_text_paginas)
+    filas_texto = _extraer_filas_resumen_desde_texto(full_text)
 
-    # 2. Respaldo por texto estructurado / OCR si no se extrajeron filas por tablas nativas
-    if not filas_resumen:
-        upper_full = full_text.upper()
-        idx_ini = upper_full.find("RESUMEN DE SEMANAS COTIZADAS POR EMPLEADOR")
-        if idx_ini == -1:
-            idx_ini = upper_full.find("IDENTIFICACIÓN APORTANTE")
-        if idx_ini == -1:
-            idx_ini = upper_full.find("IDENTIFICACION APORTANTE")
-
-        # Detener antes del bloque de Detalle o de Simultáneo/Lectura
-        marcadores_fin = [
-            "RESUMEN TIEMPO PÚBLICO SIMULTÁNEO",
-            "RESUMEN TIEMPO PUBLICO SIMULTANEO",
-            "DETALLE DE PAGOS EFECTUADOS ANTERIORES",
-            "DETALLE DE PAGOS EFECTUADOS A PARTIR DE 1995",
-            "LECTURA DEL REPORTE DE LA HISTORIA LABORAL"
-        ]
-        idx_fin = -1
-        for mf in marcadores_fin:
-            pos = upper_full.find(mf, max(0, idx_ini))
-            if pos != -1 and (idx_fin == -1 or pos < idx_fin):
-                idx_fin = pos
-
-        if idx_ini != -1:
-            texto_resumen = full_text[idx_ini:idx_fin] if idx_fin != -1 else full_text[idx_ini:]
+    # Elegir la fuente con mayor captura real de NIT/ID (evita pérdida de columna [1] cuando falta el borde izquierdo)
+    if filas_tabla:
+        ids_validos_tabla = sum(1 for f in filas_tabla if f[0] and f[0] != "(Sin ID)")
+        ids_validos_texto = sum(1 for f in filas_texto if f[0] and f[0] != "(Sin ID)")
+        if ids_validos_texto > ids_validos_tabla and len(filas_texto) >= int(len(filas_tabla) * 0.7):
+            filas_resumen = filas_texto
         else:
-            texto_resumen = full_text
-
-        for linea in texto_resumen.splitlines():
-            parsed = _parsear_linea_resumen_texto(linea)
-            if parsed:
-                filas_resumen.append(parsed)
+            filas_resumen = filas_tabla
+    else:
+        filas_resumen = filas_texto
 
     if not filas_resumen:
         return pd.DataFrame()
 
-    # 3. Enriquecer nombres truncados del Resumen con los nombres completos del Detalle ([34]/[35])
+    # Completar nombres truncados usando [34]/[35] del Detalle Post-1995
     catalogo_nombres = _extraer_catalogo_nombres_detalle(full_text, tablas_detalle=tablas_detalle)
 
     for fila in filas_resumen:
@@ -637,17 +603,13 @@ def extraer_tabla_cruda(archivo_pdf):
         if nit_clean:
             fila[0] = nit_clean
             nom_det = catalogo_nombres.get(nit_clean, "")
-            if len(nom_det) > len(nom_actual):
-                fila[1] = nom_det
-            else:
-                fila[1] = nom_actual
+            fila[1] = nom_det if len(nom_det) > len(nom_actual) else nom_actual
 
-    df_out = pd.DataFrame(filas_resumen, columns=COLUMNAS_RESUMEN)
-    return df_out
+    return pd.DataFrame(filas_resumen, columns=COLUMNAS_RESUMEN)
 
 
 # ==========================================
-# SANEAMIENTO Y SIMULTANEIDAD
+# SANEAMIENTO Y SIMULTANEIDAD (CONSERVANDO NIT Y APORTANTE)
 # ==========================================
 def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas, col_nit=None, col_aportante=None):
     datos = []
@@ -702,7 +664,6 @@ def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas,
             sim_leida = clean_num(row["Sim"]) if tiene_col_sim else 0.0
             semanas_final = semanas_leidas
 
-            # Solo recalcular si no es un periodo totalmente simultáneo (Total = 0 con Sim > 0)
             es_simultaneo_cero = (semanas_leidas == 0.0 and sim_leida > 0.0)
             if not es_simultaneo_cero and (semanas_leidas <= 0.1 or semanas_leidas > 60):
                 dias_calculados = (hasta - desde).days + 1
@@ -724,14 +685,31 @@ def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas,
     return df.sort_values('Desde') if not df.empty else df
 
 
+def _unir_unicos(serie, vacio="(Sin ID)"):
+    vals = []
+    for v in serie:
+        s = str(v).strip()
+        if s and s not in ("(Sin ID)", "No especificado", "nan", "None") and s not in vals:
+            vals.append(s)
+    return " / ".join(vals) if vals else vacio
+
+
 def aplicar_regla_simultaneidad(df):
     if df.empty:
         return df
     df_tmp = df.copy()
     df_tmp['Periodo'] = df_tmp['Desde'].dt.to_period('M')
+    agg_dict = {
+        'NIT_Aportante': lambda s: _unir_unicos(s, "(Sin ID)"),
+        'Aportante': lambda s: _unir_unicos(s, "No especificado"),
+        'Desde': 'min',
+        'Hasta': 'max',
+        'IBC': 'sum',
+        'Semanas': 'max'
+    }
     return (
         df_tmp.groupby('Periodo')
-        .agg({'IBC': 'sum', 'Semanas': 'max', 'Desde': 'min', 'Hasta': 'max'})
+        .agg(agg_dict)
         .reset_index()
         .sort_values('Periodo')
     )
