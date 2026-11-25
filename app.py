@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
 from io import BytesIO
 from docx import Document
 from docx.shared import Pt
@@ -60,7 +61,28 @@ if 'mod5_motivas_encontradas' not in st.session_state:
     st.session_state.mod5_motivas_encontradas = []
 
 
-# --- REQUISITOS EN TIEMPO REAL ---
+# ==========================================
+# UTILIDADES DE EDAD Y REQUISITOS EN TIEMPO REAL
+# ==========================================
+def calcular_edad_actual(fecha_nac):
+    """Calcula la edad exacta actual en años y meses."""
+    if not fecha_nac:
+        return 0, 0, "No registrada"
+    f_nac = pd.to_datetime(fecha_nac).date()
+    hoy = date.today()
+    if f_nac > hoy:
+        return 0, 0, "Fecha inválida"
+    rd = relativedelta(hoy, f_nac)
+    texto = f"{rd.years} años y {rd.months} mes(es)" if rd.months > 0 else f"{rd.years} años"
+    return rd.years, rd.months, texto
+
+
+def _fmt_fecha(val, vacio="No acredita"):
+    if val is None or pd.isna(val):
+        return vacio
+    return pd.to_datetime(val).strftime('%d/%m/%Y')
+
+
 def get_requisitos_estatus(genero, fecha_estatus, fecha_cumple_edad=None):
     anio_actual = datetime.now().year
     edad_req = 62 if genero == "Masculino" else 57
@@ -84,6 +106,22 @@ def get_requisitos_estatus(genero, fecha_estatus, fecha_cumple_edad=None):
     return edad_req, semanas_req, nota
 
 
+def _resumen_efectividad_texto(reconoce, retro):
+    if not reconoce:
+        return "No aplica (Prestación negada por no reunir requisitos de ley)."
+    if not retro:
+        return "Pendiente de parametrización de efectividad."
+    if retro.get("condicionado_retiro_publico"):
+        return "Condicionada a la acreditación del acto administrativo de retiro definitivo del servicio público (Art. 128 C.P.)."
+    f_efec = _fmt_fecha(retro.get("fecha_efectividad"), "Inclusión en nómina")
+    if retro.get("genera_retroactivo"):
+        f_ini = _fmt_fecha(retro.get("fecha_inicio_pago"), f_efec)
+        if retro.get("aplica_prescripcion"):
+            return f"Efectividad: {f_efec} | Inicio de pago por prescripción trienal: {f_ini}"
+        return f"Efectividad y pago a partir del {f_efec}"
+    return f"A partir de la inclusión en nómina de pensionados ({f_efec})"
+
+
 # ==========================================
 # GENERADORES DE DOCUMENTOS WORD
 # ==========================================
@@ -98,6 +136,10 @@ def generar_resolucion_word(
     style.font.size = Pt(11)
 
     tipo_resolucion = "RECONOCE" if estatus_cumplido else "NIEGA"
+    fechas = liq.get("fechas", {})
+    estatus_texto = "CONSOLIDADO" if estatus_cumplido else "NO CONSOLIDADO"
+    fecha_est_str = _fmt_fecha(fechas.get("fecha_estatus"), "No consolidado") if estatus_cumplido else "No consolidado"
+    efectividad_str = _resumen_efectividad_texto(estatus_cumplido, retro)
 
     p_enc = doc.add_paragraph()
     p_enc.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -111,7 +153,8 @@ def generar_resolucion_word(
     doc.add_heading('1. ANTECEDENTES (HECHOS)', level=1)
     texto_peticion = "radicó petición formal" if archivos['peticion'] else "elevó solicitud"
     doc.add_paragraph(
-        f"Que el(la) señor(a) {datos_afi['nombre'].upper()}, identificado(a) con cédula No. {datos_afi['cedula']}, "
+        f"Que el(la) señor(a) {datos_afi['nombre'].upper()}, identificado(a) con cédula de ciudadanía No. {datos_afi['cedula']}, "
+        f"de género {datos_afi['genero'].lower()}, nacido(a) el {datos_afi['fecha_nac']} (con edad actual de {datos_afi['edad_texto']}), "
         f"{texto_peticion} ante esta Administradora manifestando expresamente las siguientes pretensiones:"
     )
     p_pet = doc.add_paragraph()
@@ -137,6 +180,20 @@ def generar_resolucion_word(
             f"para el enfoque de género se aplica una disminución progresiva en las semanas exigidas, "
             f"siendo el requisito normativo de {req['semanas']} semanas para la causación del derecho evaluado."
         )
+
+    # --- ESTUDIO DE ESTATUS PENSIONAL ---
+    doc.add_heading('ESTUDIO DE DATOS BIOGRÁFICOS Y ESTATUS PENSIONAL:', level=2)
+    doc.add_paragraph(
+        f"• Fecha de Nacimiento: {datos_afi['fecha_nac']} | Edad Actual: {datos_afi['edad_texto']} "
+        f"(Edad mínima exigida: {req['edad']} años — {'ACREDITA' if liq['cumple_edad'] else 'NO ACREDITA'}).\n"
+        f"• Fecha de cumplimiento de edad mínima: {_fmt_fecha(fechas.get('fecha_cumple_edad'))}.\n"
+        f"• Semanas válidas consolidadas: {liq['semanas']:,.2f} semanas "
+        f"(Semanas mínimas exigidas: {req['semanas']} semanas — {'ACREDITA' if liq['cumple_sem'] else 'NO ACREDITA'}).\n"
+        f"• Fecha de cumplimiento de semanas mínimas: {_fmt_fecha(fechas.get('fecha_cumple_semanas'), 'No acredita aún')}.\n"
+        f"• Estatus Pensional: {estatus_texto} (Fecha de consolidación: {fecha_est_str}).\n"
+        f"• Fecha de Corte / Indexación aplicada: {_fmt_fecha(fechas.get('fecha_corte'))} ({fechas.get('razon_corte', '')}).\n"
+        f"• Efectividad Otorgada: {efectividad_str}"
+    )
 
     # Historia laboral (7 columnas con ID Aportante y Nombre / Razón Social)
     doc.add_heading('ANÁLISIS DE LA HISTORIA LABORAL:', level=2)
@@ -187,44 +244,92 @@ def generar_resolucion_word(
     if estatus_cumplido:
         doc.add_paragraph(
             f"Que, descendiendo al caso concreto, el(la) solicitante acreditó el cumplimiento de {req['edad']} años "
-            f"de edad y superó el umbral de semanas exigidas ({req['semanas']} semanas), consolidando el estatus pensional."
+            f"de edad (edad actual: {datos_afi['edad_texto']}) y superó el umbral de semanas exigidas ({req['semanas']} semanas), "
+            f"consolidando el estatus pensional el {fecha_est_str}."
         )
 
-        doc.add_heading('LIQUIDACIÓN TÉCNICA DE LA PRESTACIÓN:', level=2)
+        # --- ESTUDIO COMPARATIVO DE IBL ---
+        doc.add_heading('ESTUDIO TÉCNICO DEL INGRESO BASE DE LIQUIDACIÓN (IBL):', level=2)
         doc.add_paragraph(
-            "De conformidad con el artículo 21 de la Ley 100 de 1993, el IBL se calculó indexando los salarios "
-            "con base en el IPC certificado por el DANE, evaluando ambos escenarios legales:"
-        )
-        doc.add_paragraph(f"• IBL indexado de los últimos 10 años cotizados: ${liq['ibl_10']:,.0f} COP.")
-        doc.add_paragraph(f"• IBL indexado de toda la vida laboral: ${liq['ibl_vida']:,.0f} COP.")
-        doc.add_paragraph(
-            f"Se determina como IBL más favorable el correspondiente a {liq['origen_ibl']}, "
-            f"por un valor definitivo de ${liq['ibl']:,.0f} COP (año base {liq['anio_base']})."
+            f"De conformidad con lo dispuesto en el artículo 21 de la Ley 100 de 1993, el Ingreso Base de Liquidación (IBL) "
+            f"se calculó indexando anualmente los Ingresos Base de Cotización (IBC) con base en el Índice de Precios al "
+            f"Consumidor (IPC) certificado por el DANE hasta la fecha de corte ({_fmt_fecha(fechas.get('fecha_corte'))}). "
+            f"En aplicación del principio de favorabilidad, se liquidaron ambos escenarios previstos en la norma:"
         )
 
+        df_10 = liq.get("df_ibl_10", pd.DataFrame())
+        df_vida = liq.get("df_ibl_vida", pd.DataFrame())
+        rango_10 = f"{_fmt_fecha(df_10['Desde'].min())} al {_fmt_fecha(df_10['Hasta'].max())}" if not df_10.empty else "N/A"
+        rango_vida = f"{_fmt_fecha(df_vida['Desde'].min())} al {_fmt_fecha(df_vida['Hasta'].max())}" if not df_vida.empty else "N/A"
+
+        tbl_ibl = doc.add_table(rows=1, cols=5)
+        tbl_ibl.style = 'Table Grid'
+        hdr_ibl = ['Escenario Legal (Art. 21 Ley 100/93)', 'Periodos', 'Rango Evaluado', 'IBL Indexado', 'Selección']
+        for i, h_txt in enumerate(hdr_ibl):
+            tbl_ibl.rows[0].cells[i].text = ""
+            r_h = tbl_ibl.rows[0].cells[i].paragraphs[0].add_run(h_txt)
+            r_h.bold = True
+            r_h.font.name = 'Arial'
+            r_h.font.size = Pt(9)
+
+        filas_ibl = [
+            (
+                "Últimos 10 Años Cotizados",
+                str(len(df_10)),
+                rango_10,
+                f"${liq['ibl_10']:,.0f}",
+                "APLICADO (Más favorable)" if liq['origen_ibl'] == "Últimos 10 Años" else "No aplicado"
+            ),
+            (
+                "Toda la Vida Laboral",
+                str(len(df_vida)),
+                rango_vida,
+                f"${liq['ibl_vida']:,.0f}",
+                "APLICADO (Más favorable)" if liq['origen_ibl'] == "Toda la Vida" else "No aplicado"
+            )
+        ]
+        for f_ibl in filas_ibl:
+            rc = tbl_ibl.add_row().cells
+            for i, val in enumerate(f_ibl):
+                rc[i].text = ""
+                r_c = rc[i].paragraphs[0].add_run(val)
+                r_c.font.name = 'Arial'
+                r_c.font.size = Pt(9)
+
+        doc.add_paragraph(
+            f"\nEn virtud del estudio comparativo anterior, se adopta como IBL definitivo el correspondiente a "
+            f"{liq['origen_ibl']}, por un valor de ${liq['ibl']:,.0f} COP (año base {liq['anio_base']})."
+        )
+
+        # --- CÁLCULO PASO A PASO DE LA TASA DE REEMPLAZO ---
         f_data = liq['formula_tasa']
-        doc.add_paragraph("\nTASA DE REEMPLAZO (FÓRMULA DECRECIENTE LEY 797 DE 2003):")
+        doc.add_heading('CÁLCULO DE LA TASA DE REEMPLAZO (FÓRMULA DECRECIENTE LEY 797 DE 2003):', level=2)
         doc.add_paragraph(
             "Conforme al artículo 34 de la Ley 100 de 1993, modificado por el artículo 10 de la Ley 797 de 2003, "
-            "la tasa de reemplazo se calcula mediante r = 65.50 - 0.50s, con incrementos del 1.5% por cada 50 semanas "
-            "adicionales al mínimo exigido, sujeto al límite legal de 15 puntos porcentuales adicionales y tope máximo del 80%:"
+            "la tasa de reemplazo se determina mediante la fórmula decreciente r = 65.50 - 0.50s (donde 's' equivale al "
+            "número de SMMLV contenidos en el IBL), adicionando un 1.5% por cada 50 semanas cotizadas por encima del "
+            "mínimo legal, con un límite normativo de 15 puntos porcentuales adicionales y un tope máximo total del 80%:"
         )
         doc.add_paragraph(
             f"1. SMMLV de referencia ({liq['anio_base']}): ${f_data['smmlv_ref']:,.0f} COP.\n"
-            f"2. Proporción del IBL respecto al SMMLV (s): {f_data['s']:.2f} salarios mínimos.\n"
-            f"3. Fórmula base [65.50 - (0.50 x {f_data['s']:.2f})]: {f_data['tasa_base']:.2f}%.\n"
-            f"4. Semanas adicionales computables: {f_data['semanas_adicionales']:.2f} semanas ({f_data['bloques']} bloque(s) de 50).\n"
-            f"5. Incremento legal acumulado (máximo 15 puntos): +{f_data['incremento']:.2f}%.\n"
-            f"6. TASA DE REEMPLAZO FINAL DEFINITIVA: {f_data['tasa_final']:.2f}%."
+            f"2. IBL definitivo aplicado ({liq['origen_ibl']}): ${liq['ibl']:,.0f} COP.\n"
+            f"3. Proporción del IBL frente al SMMLV (s = IBL / SMMLV): {f_data['s']:.2f} salarios mínimos.\n"
+            f"4. Tasa base inicial [65.50 - (0.50 x {f_data['s']:.2f})]: {f_data['tasa_base']:.2f}%.\n"
+            f"5. Semanas válidas totales: {liq['semanas']:,.2f} | Semanas computables (tope 1.800): {f_data.get('semanas_usadas', liq['semanas']):,.2f} | Semanas mínimas exigidas: {f_data.get('semanas_minimas_exigidas', req['semanas'])}.\n"
+            f"6. Semanas adicionales sobre el mínimo legal: {f_data['semanas_adicionales']:.2f} semanas, equivalentes a {f_data['bloques']} bloque(s) completo(s) de 50 semanas.\n"
+            f"7. Incremento legal acumulado ({f_data['bloques']} x 1.5%, tope máximo 15 puntos): +{f_data['incremento']:.2f}%.\n"
+            f"8. TASA DE REEMPLAZO FINAL DEFINITIVA (tope legal 80%): {f_data['tasa_final']:.2f}%."
         )
         doc.add_paragraph(
-            f"LIQUIDACIÓN INICIAL: Mesada pensional inicial equivalente a ${liq['mesada']:,.0f} COP "
-            f"para el año {liq['anio_base']}."
+            f"LIQUIDACIÓN INICIAL DE LA MESADA: Aplicando la tasa de reemplazo del {f_data['tasa_final']:.2f}% sobre el "
+            f"IBL de ${liq['ibl']:,.0f} COP (garantizando la pensión mínima de 1 SMMLV), se determina una mesada inicial "
+            f"de ${liq['mesada']:,.0f} COP mensuales para el año base {liq['anio_base']}."
         )
 
         # --- EFECTIVIDAD, PRESCRIPCIÓN Y RETROACTIVO ---
         if retro:
-            doc.add_heading('EFECTIVIDAD, PRESCRIPCIÓN Y LIQUIDACIÓN DE RETROACTIVO:', level=2)
+            doc.add_heading('EFECTIVIDAD OTORGADA, PRESCRIPCIÓN Y LIQUIDACIÓN DE RETROACTIVO:', level=2)
+            doc.add_paragraph(f"EFECTIVIDAD OTORGADA: {efectividad_str}")
             doc.add_paragraph(retro['nota_efectividad'])
 
             if retro['aplica_prescripcion']:
@@ -263,23 +368,25 @@ def generar_resolucion_word(
                 )
     else:
         doc.add_paragraph(
-            "Que, descendiendo al caso concreto, el(la) solicitante NO CUMPLE con la totalidad de los requisitos "
-            "exigidos por la norma para acceder a la Pensión de Vejez."
+            f"Que, descendiendo al caso concreto, el(la) solicitante (nacido(a) el {datos_afi['fecha_nac']}, "
+            f"edad actual {datos_afi['edad_texto']}) NO CUMPLE con la totalidad de los requisitos exigidos "
+            f"por la norma para consolidar el estatus de Pensión de Vejez."
         )
         if liq['cumple_sem'] and not liq['cumple_edad']:
             doc.add_paragraph(
                 f"Si bien la historia laboral evidencia {liq['semanas']:,.2f} semanas cotizadas, "
-                f"el(la) asegurado(a) NO ACREDITA el requisito de edad ({req['edad']} años para el género {datos_afi['genero'].lower()})."
+                f"el(la) asegurado(a) NO ACREDITA el requisito de edad ({req['edad']} años para el género {datos_afi['genero'].lower()}), "
+                f"cumpliéndolo únicamente hasta el {_fmt_fecha(fechas.get('fecha_cumple_edad'))}."
             )
         elif liq['cumple_edad'] and not liq['cumple_sem']:
             doc.add_paragraph(
-                f"Si bien acredita el requisito de edad ({req['edad']} años), cuenta únicamente con "
-                f"{liq['semanas']:,.2f} semanas frente a las {req['semanas']} semanas exigidas por ley."
+                f"Si bien acredita el requisito de edad ({datos_afi['edad_texto']}, frente a los {req['edad']} años exigidos), "
+                f"cuenta únicamente con {liq['semanas']:,.2f} semanas frente a las {req['semanas']} semanas exigidas por ley."
             )
         else:
             doc.add_paragraph(
-                f"El(la) afiliado(a) NO ACREDITA el requisito de edad ({req['edad']} años) ni el requisito "
-                f"de semanas cotizadas ({req['semanas']} exigidas), contando únicamente con {liq['semanas']:,.2f} semanas."
+                f"El(la) afiliado(a) NO ACREDITA el requisito de edad ({datos_afi['edad_texto']} frente a {req['edad']} años) "
+                f"ni el requisito de semanas cotizadas ({req['semanas']} exigidas), contando únicamente con {liq['semanas']:,.2f} semanas."
             )
 
     # --- ANÁLISIS DE PETICIONES Y MOTIVAS ADICIONALES ---
@@ -306,9 +413,12 @@ def generar_resolucion_word(
         if retro and retro['condicionado_retiro_publico']:
             doc.add_paragraph(
                 f"ARTÍCULO PRIMERO: RECONOCER una Pensión de Vejez a favor de {datos_afi['nombre'].upper()}, "
-                f"C.C. {datos_afi['cedula']}, en cuantía de ${mesada_resuelve:,.0f} COP mensuales, dejando en suspenso "
-                f"su inclusión en nómina y disfrute hasta tanto acredite el acto administrativo de retiro definitivo "
-                f"del servicio público (Art. 128 C.P. y Ley 1821 de 2016)."
+                f"C.C. {datos_afi['cedula']}, nacido(a) el {datos_afi['fecha_nac']} ({datos_afi['edad_texto']}), "
+                f"con estatus consolidado el {fecha_est_str}, liquidada sobre un IBL de ${liq['ibl']:,.0f} COP "
+                f"({liq['origen_ibl']}) y una tasa de reemplazo del {liq['formula_tasa']['tasa_final']:.2f}%, "
+                f"en cuantía actualizada de ${mesada_resuelve:,.0f} COP mensuales, dejando en suspenso su inclusión "
+                f"en nómina y disfrute hasta tanto acredite el acto administrativo de retiro definitivo del servicio "
+                f"público (Art. 128 C.P. y Ley 1821 de 2016)."
             )
         else:
             texto_efec = (
@@ -317,8 +427,11 @@ def generar_resolucion_word(
             )
             doc.add_paragraph(
                 f"ARTÍCULO PRIMERO: RECONOCER Y ORDENAR EL PAGO de una Pensión de Vejez a favor de "
-                f"{datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, en cuantía actualizada de "
-                f"${mesada_resuelve:,.0f} COP mensuales{texto_efec}."
+                f"{datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, nacido(a) el {datos_afi['fecha_nac']} "
+                f"({datos_afi['edad_texto']}), con estatus consolidado el {fecha_est_str}, liquidada sobre un IBL "
+                f"de ${liq['ibl']:,.0f} COP ({liq['origen_ibl']}) y una tasa de reemplazo del "
+                f"{liq['formula_tasa']['tasa_final']:.2f}%, en cuantía actualizada de ${mesada_resuelve:,.0f} COP "
+                f"mensuales{texto_efec}."
             )
             if retro and retro['genera_retroactivo']:
                 doc.add_paragraph(
@@ -330,7 +443,8 @@ def generar_resolucion_word(
         doc.add_paragraph(
             f"ARTÍCULO PRIMERO: NEGAR el reconocimiento de la Pensión de Vejez y despachar desfavorablemente "
             f"las peticiones elevadas por {datos_afi['nombre'].upper()}, C.C. {datos_afi['cedula']}, "
-            f"por las razones expuestas en la parte motiva."
+            f"nacido(a) el {datos_afi['fecha_nac']} ({datos_afi['edad_texto']}), por no acreditar los requisitos "
+            f"de ley conforme a la parte motiva."
         )
 
     doc.add_paragraph(
@@ -468,6 +582,15 @@ with mod1:
             key=f"gen_{v}"
         )
 
+    edad_anios, _, edad_texto = calcular_edad_actual(st.session_state.datos_basicos["fecha_nac"])
+    edad_min_ref = 62 if st.session_state.datos_basicos["genero"] == "Masculino" else 57
+    st.info(
+        f"🎂 **Fecha de Nacimiento:** {st.session_state.datos_basicos['fecha_nac'].strftime('%d/%m/%Y')}  |  "
+        f"**Edad Actual:** {edad_texto}  |  "
+        f"**Edad Mínima de Ley ({st.session_state.datos_basicos['genero']}):** {edad_min_ref} años "
+        f"({'✅ Cumplida' if edad_anios >= edad_min_ref else '⏳ Pendiente'})"
+    )
+
     st.divider()
     st.subheader("Peticiones a Resolver de Fondo")
     st.session_state.peticiones_texto = st.text_area(
@@ -482,7 +605,12 @@ with mod1:
 # ------------------------------------------
 with mod2:
     st.header("📋 Procesamiento de la Historia Laboral")
-    st.info(f"Asegurado: {st.session_state.datos_basicos['nombre']} | C.C. {st.session_state.datos_basicos['cedula']}")
+    _, _, edad_txt_m2 = calcular_edad_actual(st.session_state.datos_basicos["fecha_nac"])
+    st.info(
+        f"Asegurado: **{st.session_state.datos_basicos['nombre']}** | "
+        f"C.C. **{st.session_state.datos_basicos['cedula']}** | "
+        f"Nacimiento: **{st.session_state.datos_basicos['fecha_nac'].strftime('%d/%m/%Y')}** ({edad_txt_m2})"
+    )
 
     if st.session_state.df_crudo is not None and not st.session_state.df_crudo.empty:
         df = st.session_state.df_crudo
@@ -560,11 +688,18 @@ with mod2:
         st.warning("Debe cargar una Historia Laboral válida en el Módulo 1.")
 
 # ------------------------------------------
-# MÓDULO 3: LIQUIDACIÓN, EFECTIVIDAD Y RETROACTIVO
+# MÓDULO 3: LIQUIDACIÓN, ESTUDIO IBL, TASA DE REEMPLAZO, ESTATUS Y RETROACTIVO
 # ------------------------------------------
 with mod3:
-    st.header("🧮 Liquidación de Prestación y Retroactivo")
-    st.info(f"Asegurado: {st.session_state.datos_basicos['nombre']}")
+    st.header("🧮 Estudio de Fondo: Estatus, IBL, Tasa de Reemplazo y Retroactivo")
+    _, _, edad_txt_m3 = calcular_edad_actual(st.session_state.datos_basicos["fecha_nac"])
+    st.info(
+        f"Asegurado: **{st.session_state.datos_basicos['nombre']}** | "
+        f"C.C. **{st.session_state.datos_basicos['cedula']}** | "
+        f"Fecha Nacimiento: **{st.session_state.datos_basicos['fecha_nac'].strftime('%d/%m/%Y')}** | "
+        f"Edad Actual: **{edad_txt_m3}** | "
+        f"Género: **{st.session_state.datos_basicos['genero']}**"
+    )
 
     if st.session_state.df_final is not None:
         emp = st.session_state.info_empleador
@@ -602,7 +737,7 @@ with mod3:
                 disabled=not tiene_retiro_formal
             )
 
-        if st.button("Calcular Derecho, Liquidación y Retroactivo", type="primary"):
+        if st.button("Calcular Derecho, Estudio Técnico y Retroactivo", type="primary"):
             df_f = st.session_state.df_final
             genero = st.session_state.datos_basicos["genero"]
             fecha_nac = st.session_state.datos_basicos["fecha_nac"]
@@ -611,8 +746,8 @@ with mod3:
             fechas = liq.determinar_fechas_clave()
 
             anio_base = fechas['fecha_corte'].year
-            ibl_10, _ = liq.calcular_ibl_indexado(fechas['fecha_corte'], "ultimos_10")
-            ibl_vida, _ = liq.calcular_ibl_indexado(fechas['fecha_corte'], "toda_vida")
+            ibl_10, df_ibl_10 = liq.calcular_ibl_indexado(fechas['fecha_corte'], "ultimos_10")
+            ibl_vida, df_ibl_vida = liq.calcular_ibl_indexado(fechas['fecha_corte'], "toda_vida")
             ibl_def = max(ibl_10, ibl_vida)
             origen_ibl = "Últimos 10 Años" if ibl_10 >= ibl_vida else "Toda la Vida"
 
@@ -632,6 +767,8 @@ with mod3:
                 "anio_base": anio_base,
                 "ibl_10": ibl_10,
                 "ibl_vida": ibl_vida,
+                "df_ibl_10": df_ibl_10,
+                "df_ibl_vida": df_ibl_vida,
                 "formula_tasa": f_detalle,
                 "edad_req": edad_req,
                 "sem_req": sem_req,
@@ -660,55 +797,186 @@ with mod3:
         if st.session_state.liq_resultados is not None:
             r = st.session_state.liq_resultados
             retro = st.session_state.retro_resultados
+            fechas = r['fechas']
+            f_tasa = r['formula_tasa']
 
+            # --- 1. ESTATUS PENSIONAL Y EFECTIVIDAD ---
+            st.divider()
             if r['reconoce']:
-                st.success("✅ PROCEDE EL RECONOCIMIENTO")
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric(f"IBL ({r['anio_base']})", f"${r['ibl']:,.0f}", r['origen_ibl'])
-                c2.metric("Tasa de Reemplazo", f"{r['formula_tasa']['tasa_final']:.2f}%")
-                c3.metric(f"Mesada Inicial ({r['anio_base']})", f"${r['mesada']:,.0f}")
-                if retro:
-                    c4.metric("Mesada Actualizada", f"${retro['mesada_actualizada']:,.0f}")
+                st.success("✅ PROCEDE EL RECONOCIMIENTO — ESTATUS PENSIONAL CONSOLIDADO")
+            else:
+                st.error("❌ NO ACREDITA REQUISITOS DE LEY — ESTATUS NO CONSOLIDADO")
 
-                if retro:
-                    st.divider()
-                    st.subheader("📅 Estudio de Efectividad y Retroactivo")
-                    if retro["condicionado_retiro_publico"]:
-                        st.warning(f"🏛️ {retro['nota_efectividad']}")
-                    else:
-                        st.info(retro['nota_efectividad'])
+            st.subheader("1. Estatus Pensional, Edad y Efectividad Otorgada")
+            e1, e2, e3, e4 = st.columns(4)
+            e1.metric(
+                "Edad Actual",
+                edad_txt_m3,
+                f"Nac: {st.session_state.datos_basicos['fecha_nac'].strftime('%d/%m/%Y')}"
+            )
+            e2.metric(
+                "Estatus Pensional",
+                "CONSOLIDADO" if r['reconoce'] else "NO CONSOLIDADO",
+                _fmt_fecha(fechas.get('fecha_estatus'), "Pendiente") if r['reconoce'] else "Faltan requisitos"
+            )
+            e3.metric(
+                "Semanas Válidas",
+                f"{r['semanas']:,.2f}",
+                f"Exigidas: {r['sem_req']}"
+            )
+            e4.metric(
+                "Efectividad Otorgada",
+                _fmt_fecha(retro['fecha_efectividad'], "Inclusión nómina") if (r['reconoce'] and retro and not retro['condicionado_retiro_publico']) else ("Retiro público" if (retro and retro['condicionado_retiro_publico']) else "No aplica"),
+                "Con prescripción" if (retro and retro['aplica_prescripcion']) else ("Disfrute directo" if r['reconoce'] else "Negación")
+            )
 
-                    if retro["aplica_prescripcion"]:
-                        st.warning(
-                            f"⚠️ **Prescripción Trienal Aplicada:** Efectividad del {retro['fecha_efectividad'].strftime('%d/%m/%Y')}, "
-                            f"pero pago liquidado a partir del **{retro['fecha_inicio_pago'].strftime('%d/%m/%Y')}** (Art. 488 CST / 151 CPTSS)."
+            df_estatus = pd.DataFrame([
+                {"Concepto": "Fecha de Nacimiento / Edad Actual", "Detalle": f"{st.session_state.datos_basicos['fecha_nac'].strftime('%d/%m/%Y')} ({edad_txt_m3})"},
+                {"Concepto": "Requisito de Edad y Cumplimiento", "Detalle": f"{r['edad_req']} años — Fecha cumplimiento: {_fmt_fecha(fechas.get('fecha_cumple_edad'))} ({'Cumplida' if r['cumple_edad'] else 'Pendiente'})"},
+                {"Concepto": "Requisito de Semanas y Cumplimiento", "Detalle": f"{r['sem_req']} semanas ({r['nota_req']}) — Fecha cumplimiento: {_fmt_fecha(fechas.get('fecha_cumple_semanas'), 'No acredita aún')}"},
+                {"Concepto": "Consolidación del Estatus Pensional", "Detalle": f"{'CONSOLIDADO el ' + _fmt_fecha(fechas.get('fecha_estatus')) if r['reconoce'] else 'NO CONSOLIDADO'}"},
+                {"Concepto": "Fecha de Corte para Indexación (IPC)", "Detalle": f"{_fmt_fecha(fechas.get('fecha_corte'))} — {fechas.get('razon_corte', '')}"},
+                {"Concepto": "Efectividad Otorgada", "Detalle": _resumen_efectividad_texto(r['reconoce'], retro)}
+            ])
+            st.table(df_estatus)
+
+            # --- 2. ESTUDIO COMPARATIVO DEL IBL ---
+            st.divider()
+            st.subheader("2. Estudio del Cálculo del IBL (Últimos 10 Años vs. Toda la Vida Laboral)")
+            if not r['reconoce']:
+                st.caption("ℹ️ Proyección técnica informativa (no genera derecho al no acreditarse los requisitos de ley).")
+
+            df_10 = r.get("df_ibl_10", pd.DataFrame())
+            df_vida = r.get("df_ibl_vida", pd.DataFrame())
+            rango_10 = f"{_fmt_fecha(df_10['Desde'].min())} al {_fmt_fecha(df_10['Hasta'].max())}" if not df_10.empty else "Sin registros"
+            rango_vida = f"{_fmt_fecha(df_vida['Desde'].min())} al {_fmt_fecha(df_vida['Hasta'].max())}" if not df_vida.empty else "Sin registros"
+
+            i1, i2, i3 = st.columns(3)
+            i1.metric(
+                "IBL Últimos 10 Años",
+                f"${r['ibl_10']:,.0f}",
+                "✅ Más favorable" if r['origen_ibl'] == "Últimos 10 Años" else f"{len(df_10)} periodos"
+            )
+            i2.metric(
+                "IBL Toda la Vida Laboral",
+                f"${r['ibl_vida']:,.0f}",
+                "✅ Más favorable" if r['origen_ibl'] == "Toda la Vida" else f"{len(df_vida)} periodos"
+            )
+            i3.metric(
+                f"IBL Definitivo ({r['anio_base']})",
+                f"${r['ibl']:,.0f}",
+                f"Origen: {r['origen_ibl']}"
+            )
+
+            df_comp_ibl = pd.DataFrame([
+                {
+                    "Escenario (Art. 21 Ley 100/93)": "Últimos 10 Años Cotizados",
+                    "Periodos": len(df_10),
+                    "Rango Evaluado": rango_10,
+                    "IBL Indexado": r['ibl_10'],
+                    "Resultado": "✅ APLICADO (Más favorable)" if r['origen_ibl'] == "Últimos 10 Años" else "Descartado"
+                },
+                {
+                    "Escenario (Art. 21 Ley 100/93)": "Toda la Vida Laboral",
+                    "Periodos": len(df_vida),
+                    "Rango Evaluado": rango_vida,
+                    "IBL Indexado": r['ibl_vida'],
+                    "Resultado": "✅ APLICADO (Más favorable)" if r['origen_ibl'] == "Toda la Vida" else "Descartado"
+                }
+            ])
+            st.dataframe(
+                df_comp_ibl.style.format({"IBL Indexado": "${:,.0f}"}),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            col_det1, col_det2 = st.columns(2)
+            with col_det1:
+                with st.expander(f"🔎 Ver detalle de indexación IPC — Últimos 10 Años ({len(df_10)} periodos)"):
+                    if not df_10.empty:
+                        st.dataframe(
+                            df_10.style.format({
+                                'IBC_Historico': "${:,.0f}",
+                                'Factor_IPC': "{:.4f}",
+                                'IBC_Actualizado': "${:,.0f}",
+                                'Semanas': "{:.2f}"
+                            }),
+                            use_container_width=True
+                        )
+            with col_det2:
+                with st.expander(f"🔎 Ver detalle de indexación IPC — Toda la Vida Laboral ({len(df_vida)} periodos)"):
+                    if not df_vida.empty:
+                        st.dataframe(
+                            df_vida.style.format({
+                                'IBC_Historico': "${:,.0f}",
+                                'Factor_IPC': "{:.4f}",
+                                'IBC_Actualizado': "${:,.0f}",
+                                'Semanas': "{:.2f}"
+                            }),
+                            use_container_width=True
                         )
 
-                    if retro["genera_retroactivo"]:
-                        m1, m2, m3, m4 = st.columns(4)
-                        m1.metric("Bruto Ordinarias", f"${retro['bruto_ordinarias']:,.0f}")
-                        m2.metric("Mesadas Adicionales", f"${retro['bruto_adicionales']:,.0f}")
-                        m3.metric("Descuento Salud", f"-${retro['total_salud']:,.0f}")
-                        m4.metric("RETROACTIVO NETO", f"${retro['total_neto']:,.0f}")
+            # --- 3. CÁLCULO PASO A PASO DE LA TASA DE REEMPLAZO ---
+            st.divider()
+            st.subheader("3. Detalle del Cálculo de la Tasa de Reemplazo (Ley 797 de 2003)")
+            t1, t2, t3, t4 = st.columns(4)
+            t1.metric("Relación s (IBL / SMMLV)", f"{f_tasa['s']:.2f} SMMLV")
+            t2.metric("Tasa Base (65.5 - 0.5s)", f"{f_tasa['tasa_base']:.2f}%")
+            t3.metric("Incremento Sem. Extra", f"+{f_tasa['incremento']:.2f}%", f"{f_tasa['bloques']} bloque(s) de 50")
+            t4.metric("Tasa de Reemplazo Final", f"{f_tasa['tasa_final']:.2f}%", f"Mesada ({r['anio_base']}): ${r['mesada']:,.0f}")
 
-                        with st.expander("Ver liquidación detallada mes a mes del retroactivo"):
-                            st.dataframe(
-                                retro["df_detalle"].style.format({
-                                    'Mesada Vigente': "${:,.0f}",
-                                    'Valor Ordinario': "${:,.0f}",
-                                    'Valor Adicional': "${:,.0f}",
-                                    '% Salud': "{:.0f}%",
-                                    'Descuento Salud': "${:,.0f}",
-                                    'Neto a Pagar': "${:,.0f}"
-                                }),
-                                use_container_width=True
-                            )
-                    else:
-                        st.info("No se liquida valor de retroactivo para el escenario seleccionado.")
-            else:
-                st.error("❌ NO ACREDITA REQUISITOS DE LEY")
-                st.write(f"- Edad cumplida: **{'Sí' if r['cumple_edad'] else 'No'}** (Requisito: {r['edad_req']} años)")
-                st.write(f"- Semanas actuales: **{r['semanas']:,.2f}** / Semanas exigidas: **{r['sem_req']}**")
+            df_pasos_tasa = pd.DataFrame([
+                {"Paso": "1. SMMLV de referencia", "Fórmula / Criterio": f"Año base de liquidación ({r['anio_base']})", "Resultado": f"${f_tasa['smmlv_ref']:,.0f}"},
+                {"Paso": "2. Proporción IBL / SMMLV (s)", "Fórmula / Criterio": f"${r['ibl']:,.0f} / ${f_tasa['smmlv_ref']:,.0f}", "Resultado": f"{f_tasa['s']:.2f} salarios mínimos"},
+                {"Paso": "3. Tasa base inicial (r)", "Fórmula / Criterio": f"65.50 - (0.50 × {f_tasa['s']:.2f}) [Piso 55% / Techo 65.5%]", "Resultado": f"{f_tasa['tasa_base']:.2f}%"},
+                {"Paso": "4. Semanas computables vs. mínimas", "Fórmula / Criterio": f"Válidas: {r['semanas']:,.2f} | Tope 1.800: {f_tasa.get('semanas_usadas', r['semanas']):,.2f} | Mínimo legal: {f_tasa.get('semanas_minimas_exigidas', r['sem_req'])}", "Resultado": f"{f_tasa['semanas_adicionales']:.2f} semanas extra"},
+                {"Paso": "5. Bloques completos de 50 semanas", "Fórmula / Criterio": f"Parte entera({f_tasa['semanas_adicionales']:.2f} / 50)", "Resultado": f"{f_tasa['bloques']} bloque(s)"},
+                {"Paso": "6. Incremento porcentual acumulado", "Fórmula / Criterio": f"{f_tasa['bloques']} × 1.50% (límite normativo: máx. 15 puntos)", "Resultado": f"+{f_tasa['incremento']:.2f}%"},
+                {"Paso": "7. Tasa de Reemplazo Definitiva", "Fórmula / Criterio": f"{f_tasa['tasa_base']:.2f}% + {f_tasa['incremento']:.2f}% (tope legal máximo: 80%)", "Resultado": f"{f_tasa['tasa_final']:.2f}%"},
+                {"Paso": f"8. Mesada Inicial ({r['anio_base']})", "Fórmula / Criterio": f"${r['ibl']:,.0f} × {f_tasa['tasa_final']:.2f}% (garantía mínima 1 SMMLV)", "Resultado": f"${r['mesada']:,.0f}"}
+            ])
+            st.table(df_pasos_tasa)
+
+            # --- 4. RETROACTIVO (SI RECONOCE) ---
+            if r['reconoce'] and retro:
+                st.divider()
+                st.subheader("4. Estudio de Efectividad, Prescripción y Retroactivo")
+                if retro["condicionado_retiro_publico"]:
+                    st.warning(f"🏛️ {retro['nota_efectividad']}")
+                else:
+                    st.info(retro['nota_efectividad'])
+
+                if retro["aplica_prescripcion"]:
+                    st.warning(
+                        f"⚠️ **Prescripción Trienal Aplicada:** Efectividad del {retro['fecha_efectividad'].strftime('%d/%m/%Y')}, "
+                        f"pero pago liquidado a partir del **{retro['fecha_inicio_pago'].strftime('%d/%m/%Y')}** (Art. 488 CST / 151 CPTSS)."
+                    )
+
+                c_mes1, c_mes2 = st.columns(2)
+                c_mes1.metric(f"Mesada Inicial ({r['anio_base']})", f"${r['mesada']:,.0f}")
+                c_mes2.metric("Mesada Actualizada al Ingreso en Nómina", f"${retro['mesada_actualizada']:,.0f}")
+
+                if retro["genera_retroactivo"]:
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Bruto Ordinarias", f"${retro['bruto_ordinarias']:,.0f}")
+                    m2.metric("Mesadas Adicionales", f"${retro['bruto_adicionales']:,.0f}")
+                    m3.metric("Descuento Salud", f"-${retro['total_salud']:,.0f}")
+                    m4.metric("RETROACTIVO NETO", f"${retro['total_neto']:,.0f}")
+
+                    with st.expander("Ver liquidación detallada mes a mes del retroactivo"):
+                        st.dataframe(
+                            retro["df_detalle"].style.format({
+                                'Mesada Vigente': "${:,.0f}",
+                                'Valor Ordinario': "${:,.0f}",
+                                'Valor Adicional': "${:,.0f}",
+                                '% Salud': "{:.0f}%",
+                                'Descuento Salud': "${:,.0f}",
+                                'Neto a Pagar': "${:,.0f}"
+                            }),
+                            use_container_width=True
+                        )
+                else:
+                    st.info("No se liquida valor de retroactivo para el escenario seleccionado.")
     else:
         st.warning("Debe procesar la Historia Laboral en el Módulo 2.")
 
@@ -721,17 +989,47 @@ with mod4:
     if st.session_state.liq_resultados is not None:
         r = st.session_state.liq_resultados
         retro = st.session_state.retro_resultados
+        fechas = r['fechas']
+        f_tasa = r['formula_tasa']
         estado_texto = "RECONOCIMIENTO" if r['reconoce'] else "NEGACIÓN"
+        _, _, edad_txt_m4 = calcular_edad_actual(st.session_state.datos_basicos["fecha_nac"])
+        efectividad_m4 = _resumen_efectividad_texto(r['reconoce'], retro)
 
-        st.subheader("Resumen Ejecutivo")
+        st.subheader("Resumen Ejecutivo del Acto Administrativo")
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Cédula", st.session_state.datos_basicos["cedula"])
-        c2.metric("Semanas Válidas", f"{r['semanas']:,.2f}")
-        c3.metric(
+        c1.metric("Asegurado / C.C.", st.session_state.datos_basicos["cedula"], st.session_state.datos_basicos["nombre"])
+        c2.metric("Edad Actual", edad_txt_m4, f"Nac: {st.session_state.datos_basicos['fecha_nac'].strftime('%d/%m/%Y')}")
+        c3.metric("Estatus Pensional", "CONSOLIDADO" if r['reconoce'] else "NO CONSOLIDADO", _fmt_fecha(fechas.get('fecha_estatus'), "N/A") if r['reconoce'] else "Sin consolidar")
+        c4.metric("Sentido del Acto", estado_texto, delta_color="normal" if r['reconoce'] else "inverse")
+
+        c5, c6, c7, c8 = st.columns(4)
+        c5.metric("IBL 10 Últimos Años", f"${r['ibl_10']:,.0f}")
+        c6.metric("IBL Toda la Vida", f"${r['ibl_vida']:,.0f}")
+        c7.metric("Tasa de Reemplazo", f"{f_tasa['tasa_final']:.2f}%", f"IBL usado: {r['origen_ibl']}")
+        c8.metric(
             "Retroactivo Neto",
             f"${retro['total_neto']:,.0f}" if (r['reconoce'] and retro and retro['genera_retroactivo']) else "$0"
         )
-        c4.metric("Sentido del Acto", estado_texto, delta_color="normal" if r['reconoce'] else "inverse")
+
+        st.info(f"**Efectividad Otorgada:** {efectividad_m4}")
+
+        with st.expander("👁️ Vista Previa del Estudio Técnico que se incluirá en la Resolución Word", expanded=True):
+            st.markdown(
+                f"**1. Datos Biográficos y Estatus:**\n"
+                f"- **Nombre:** {st.session_state.datos_basicos['nombre'].upper()} | **C.C.:** {st.session_state.datos_basicos['cedula']} | **Género:** {st.session_state.datos_basicos['genero']}\n"
+                f"- **Fecha de Nacimiento:** {st.session_state.datos_basicos['fecha_nac'].strftime('%d/%m/%Y')} | **Edad Actual:** {edad_txt_m4}\n"
+                f"- **Semanas Válidas:** {r['semanas']:,.2f} / Exigidas: {r['sem_req']} ({r['nota_req']})\n"
+                f"- **Estatus Pensional:** {'CONSOLIDADO el ' + _fmt_fecha(fechas.get('fecha_estatus')) if r['reconoce'] else 'NO CONSOLIDADO'}\n"
+                f"- **Efectividad Otorgada:** {efectividad_m4}\n\n"
+                f"**2. Estudio Comparativo del IBL (Año base {r['anio_base']}):**\n"
+                f"- **Últimos 10 Años:** ${r['ibl_10']:,.0f} COP\n"
+                f"- **Toda la Vida Laboral:** ${r['ibl_vida']:,.0f} COP\n"
+                f"- **IBL Definitivo Más Favorable ({r['origen_ibl']}):** ${r['ibl']:,.0f} COP\n\n"
+                f"**3. Cálculo de la Tasa de Reemplazo (Ley 797 de 2003):**\n"
+                f"- **SMMLV ({r['anio_base']}):** ${f_tasa['smmlv_ref']:,.0f} | **Proporción s:** {f_tasa['s']:.2f}\n"
+                f"- **Tasa Base (65.50 - 0.50s):** {f_tasa['tasa_base']:.2f}% | **Semanas Extra:** {f_tasa['semanas_adicionales']:.2f} ({f_tasa['bloques']} bloques × 1.5% = +{f_tasa['incremento']:.2f}%)\n"
+                f"- **Tasa Final Aplicada:** {f_tasa['tasa_final']:.2f}% | **Mesada Inicial ({r['anio_base']}):** ${r['mesada']:,.0f} COP"
+            )
 
         st.divider()
         req_data = {"edad": r['edad_req'], "semanas": r['sem_req'], "nota": r['nota_req']}
@@ -739,6 +1037,7 @@ with mod4:
             "nombre": st.session_state.datos_basicos["nombre"],
             "cedula": st.session_state.datos_basicos["cedula"],
             "fecha_nac": st.session_state.datos_basicos["fecha_nac"].strftime('%d/%m/%Y'),
+            "edad_texto": edad_txt_m4,
             "genero": st.session_state.datos_basicos["genero"]
         }
 
