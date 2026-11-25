@@ -142,20 +142,33 @@ def generar_resolucion_word(
         f"se acumulen los Ingresos Base de Cotización (IBC) sin exceder 30 días mensuales o 360 anuales:"
     )
 
-    table = doc.add_table(rows=1, cols=5)
+    table = doc.add_table(rows=1, cols=7)
     table.style = 'Table Grid'
+    encabezados_hl = ['Periodo', 'ID Aportante', 'Nombre / Razón Social', 'Desde', 'Hasta', 'IBC Sumado', 'Semanas']
     hdr_cells = table.rows[0].cells
-    for i, header_text in enumerate(['Periodo', 'Desde', 'Hasta', 'IBC Sumado', 'Semanas']):
-        hdr_cells[i].text = header_text
-        hdr_cells[i].paragraphs[0].runs[0].bold = True
+    for i, header_text in enumerate(encabezados_hl):
+        hdr_cells[i].text = ""
+        run_h = hdr_cells[i].paragraphs[0].add_run(header_text)
+        run_h.bold = True
+        run_h.font.name = 'Arial'
+        run_h.font.size = Pt(8.5)
 
     for _, row in df_historia.iterrows():
         row_cells = table.add_row().cells
-        row_cells[0].text = str(row['Periodo'])
-        row_cells[1].text = row['Desde'].strftime('%d/%m/%Y') if pd.notnull(row['Desde']) else ""
-        row_cells[2].text = row['Hasta'].strftime('%d/%m/%Y') if pd.notnull(row['Hasta']) else ""
-        row_cells[3].text = f"${row['IBC']:,.0f}"
-        row_cells[4].text = f"{row['Semanas']:.2f}"
+        valores_fila = [
+            str(row['Periodo']),
+            str(row.get('NIT_Aportante', '')),
+            str(row.get('Aportante', '')),
+            row['Desde'].strftime('%d/%m/%Y') if pd.notnull(row['Desde']) else "",
+            row['Hasta'].strftime('%d/%m/%Y') if pd.notnull(row['Hasta']) else "",
+            f"${row['IBC']:,.0f}",
+            f"{row['Semanas']:.2f}"
+        ]
+        for i, val in enumerate(valores_fila):
+            row_cells[i].text = ""
+            run_c = row_cells[i].paragraphs[0].add_run(val)
+            run_c.font.name = 'Arial'
+            run_c.font.size = Pt(8.5)
 
     doc.add_paragraph(f"\nTotal de semanas consolidadas y válidas: {liq['semanas']:,.2f} semanas.")
 
