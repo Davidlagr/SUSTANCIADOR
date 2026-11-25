@@ -45,6 +45,8 @@ if 'archivos_cargados' not in st.session_state:
     st.session_state.archivos_cargados = {"resoluciones": 0, "peticion": False}
 if 'peticiones_texto' not in st.session_state:
     st.session_state.peticiones_texto = "Reconocimiento de Pensión de Vejez."
+if 'exp_version' not in st.session_state:
+    st.session_state.exp_version = 0
 
 # Estados exclusivos del Módulo 5 (Autónomo)
 if 'banco_motivas' not in st.session_state:
@@ -373,6 +375,7 @@ with st.sidebar:
         st.session_state.retro_resultados = None
         st.session_state.archivos_cargados = {"resoluciones": 0, "peticion": False}
         st.session_state.peticiones_texto = "Reconocimiento de Pensión de Vejez."
+        st.session_state.exp_version = st.session_state.get("exp_version", 0) + 1
         st.rerun()
 
 mod1, mod2, mod3, mod4, mod5 = st.tabs([
@@ -400,39 +403,70 @@ with mod1:
 
     if st.button("Procesar Archivos para Extraer Datos Básicos y Peticiones", type="primary"):
         datos_temp = {"cedula": "", "nombre": "", "fecha_nac": date(1975, 1, 1), "genero": "Masculino"}
+
         if hl_file:
             hl_file.seek(0)
             datos_temp = extraer_datos_basicos(hl_file)
             hl_file.seek(0)
             st.session_state.df_crudo = extraer_tabla_cruda(hl_file)
+            # Limpia cálculos previos si se carga una nueva historia laboral
+            st.session_state.df_final = None
+            st.session_state.info_empleador = None
+            st.session_state.liq_resultados = None
+            st.session_state.retro_resultados = None
+
         if peticion_file:
             peticion_file.seek(0)
             datos_temp, pet_ext = extraer_datos_peticion(peticion_file, datos_temp)
             if pet_ext != "Reconocimiento de Pensión de Vejez.":
                 st.session_state.peticiones_texto = pet_ext
+
         st.session_state.datos_basicos = datos_temp
+        st.session_state.exp_version = st.session_state.get("exp_version", 0) + 1
         st.success("Cruce de datos completado.")
         st.rerun()
 
     st.divider()
     st.subheader("Datos del Asegurado (Extraídos/Editables)")
+
+    v = st.session_state.get("exp_version", 0)
     c1, c2 = st.columns(2)
     with c1:
-        st.session_state.datos_basicos["cedula"] = st.text_input("Cédula", value=st.session_state.datos_basicos["cedula"])
-        st.session_state.datos_basicos["nombre"] = st.text_input("Nombre Completo", value=st.session_state.datos_basicos["nombre"])
+        st.session_state.datos_basicos["cedula"] = st.text_input(
+            "Cédula",
+            value=st.session_state.datos_basicos["cedula"],
+            key=f"ced_{v}"
+        )
+        st.session_state.datos_basicos["nombre"] = st.text_input(
+            "Nombre Completo",
+            value=st.session_state.datos_basicos["nombre"],
+            key=f"nom_{v}"
+        )
     with c2:
         st.session_state.datos_basicos["fecha_nac"] = st.date_input(
             "Fecha de Nacimiento",
             value=st.session_state.datos_basicos["fecha_nac"],
             min_value=date(1900, 1, 1),
-            max_value=date.today()
+            max_value=date.today(),
+            key=f"fnac_{v}"
         )
         idx_gen = 0 if st.session_state.datos_basicos["genero"] == "Masculino" else 1
-        st.session_state.datos_basicos["genero"] = st.radio("Género", ["Masculino", "Femenino"], index=idx_gen, horizontal=True)
+        st.session_state.datos_basicos["genero"] = st.radio(
+            "Género",
+            ["Masculino", "Femenino"],
+            index=idx_gen,
+            horizontal=True,
+            key=f"gen_{v}"
+        )
 
     st.divider()
     st.subheader("Peticiones a Resolver de Fondo")
-    st.session_state.peticiones_texto = st.text_area("Pretensiones capturadas:", value=st.session_state.peticiones_texto, height=120)
+    st.session_state.peticiones_texto = st.text_area(
+        "Pretensiones capturadas:",
+        value=st.session_state.peticiones_texto,
+        height=120,
+        key=f"pet_txt_{v}"
+    )
 
 # ------------------------------------------
 # MÓDULO 2: HISTORIA LABORAL + DETECTOR EMPLEADOR PÚBLICO
