@@ -409,7 +409,32 @@ def identificar_ultimo_empleador_publico(df_limpio):
 # ==========================================
 # EXTRACCIÓN DE DATOS BÁSICOS Y PETICIÓN
 # ==========================================
+def _es_nombre_persona_valido(candidato):
+    """Valida que el texto extraído corresponda a un nombre propio y no a una etiqueta del formulario."""
+    c = _limpiar_texto_colpensiones(candidato)
+    if not c or len(c) < 5 or len(c) > 80 or re.search(r'\d', c):
+        return False
+
+    upper = c.upper()
+    prohibidos = [
+        "CEDULA", "CÉDULA", "CIUDADANIA", "CIUDADANÍA", "DIRECCION", "DIRECCIÓN",
+        "RAZON SOCIAL", "RAZÓN SOCIAL", "APORTANTE", "FECHA", "ESTADO", "ACTIVO",
+        "COTIZANTE", "INACTIVO", "CORREO", "UBICACION", "UBICACIÓN", "COLPENSIONES",
+        "INFORMACION", "INFORMACIÓN", "AFILIADO", "DOCUMENTO", "REPORTE", "SEMANAS",
+        "TIPO DE", "NUMERO DE", "NÚMERO DE", "PERIODO", "ACTUALIZADO", "RESUMEN"
+    ]
+    if any(p in upper for p in prohibidos):
+        return False
+
+    palabras = [p for p in re.split(r'\s+', c) if re.fullmatch(r'[A-Za-zÑñÁÉÍÓÚáéíóúÜü\.]+', p)]
+    return len(palabras) >= 2 and len(palabras) == len(c.split())
+
+
 def extraer_datos_basicos(pdf_file):
+    """
+    Extrae cédula, nombre completo del afiliado, fecha de nacimiento y género
+    desde la cabecera del Reporte de Semanas Cotizadas de Colpensiones (tablas nativas, texto u OCR).
+    """
     datos = {
         "cedula": "",
         "nombre": "",
@@ -420,63 +445,121 @@ def extraer_datos_basicos(pdf_file):
         with pdfplumber.open(pdf_file) as pdf:
             if len(pdf.pages) > 0:
                 p0 = pdf.pages[0]
-                text, _ = _extraer_texto_pagina_con_ocr(p0)
+                text_p0, _ = _extraer_texto_pagina_con_ocr(p0)
 
+                # 1. Lectura directa desde tablas de cabecera (PDF nativo)
                 try:
                     tablas_p0 = p0.extract_tables() or []
-                    for tbl in tablas_p0[:2]:
+                    for tbl in tablas_p0[:3]:
                         for fila in tbl:
-                            fila_txt = " ".join([str(c or "") for c in fila])
-                            if "Número de Documento" in fila_txt or "Fecha de Nacimiento" in fila_txt:
-                                celdas = [str(c or "").strip() for c in fila if c and str(c).strip()]
-                                for idx_c, val in enumerate(celdas):
-                                    if "Número de Documento" in val and idx_c + 1 < len(celdas):
-                                        m_ced = re.search(r'\b(\d{6,12})\b', celdas[idx_c + 1])
-                                        if m_ced:
-                                            datos["cedula"] = m_ced.group(1)
-                                        lineas_der = [ln.strip() for ln in celdas[idx_c + 1].splitlines() if ln.strip()]
-                                        for ln in lineas_der:
-                                            if re.fullmatch(r'[A-ZÑÁÉÍÓÚ\s]{5,}', ln) and "CÉDULA" not in ln:
-                                                datos["nombre"] = _limpiar_texto_colpensiones(ln)
+                            celdas_raw = [str(c or "").strip() for c in fila]
+                            for idx_c, val in enumerate(celdas_raw):
+                                if not val:
+                                    continue
+                                val_up = val.upper()
+                                sig_val = next((celdas_raw[j] for j in range(idx_c + 1, len(celdas_raw)) if celdas_raw[j]), "")
+
+                                # Caso A: Celda con "Número de Documento" (sola o agrupada con Nombre y Dirección)
+                                if ("NÚMERO DE DOCUMENTO" in val_up or "NUMERO DE DOCUMENTO" in val_up) and sig_val:
+                                    m_ced = re.search(r'\b(\d{5,12})\b', sig_val.replace(".", ""))
+                                    if m_ced and not datos["cedula"]:
+                                        datos["cedula"] = m_ced.group(1)
+                                    if "NOMBRE" in val_up and not datos["nombre"]:
+                                        for ln in sig_val.splitlines():
+                                            if _es_nombre_persona_valido(ln):
+                                                datos["nombre"] = _limpiar_texto_colpensiones(ln).upper()
                                                 break
-                                    if "Fecha de Nacimiento" in val and idx_c + 1 < len(celdas):
-                                        m_f = re.search(r'(\d{2}/\d{2}/\d{4})', celdas[idx_c + 1])
-                                        if m_f:
-                                            datos["fecha_nac"] = datetime.strptime(m_f.group(1), "%d/%m/%Y").date()
+
+                                # Caso B: Celda independiente para "Nombre:" o "Nombres y Apellidos:"
+                                if (
+                                    re.search(r'\bNOMBRES?(?:\s+Y\s+APELLIDOS?)?\s*:?$', val_up)
+                                    and "RAZON" not in val_up
+                                    and "RAZÓN" not in val_up
+                                    and sig_val
+                                    and not datos["nombre"]
+                                ):
+                                    primera_linea = sig_val.splitlines()[0].strip()
+                                    if _es_nombre_persona_valido(primera_linea):
+                                        datos["nombre"] = _limpiar_texto_colpensiones(primera_linea).upper()
+
+                                # Caso C: Fecha de nacimiento
+                                if "FECHA DE NACIMIENTO" in val_up and sig_val:
+                                    m_f = re.search(r'(\d{2}/\d{2}/\d{4})', sig_val)
+                                    if m_f:
+                                        datos["fecha_nac"] = datetime.strptime(m_f.group(1), "%d/%m/%Y").date()
+
+                                # Caso D: Sexo / Género
+                                if ("SEXO" in val_up or "GÉNERO" in val_up or "GENERO" in val_up) and sig_val:
+                                    if sig_val.upper().startswith("F"):
+                                        datos["genero"] = "Femenino"
+                                    elif sig_val.upper().startswith("M"):
+                                        datos["genero"] = "Masculino"
                 except Exception:
                     pass
 
-                if text:
+                # 2. Complemento y respaldo desde texto plano / OCR de la página 1
+                if text_p0:
+                    upper_t = text_p0.upper()
+                    corte = upper_t.find("RESUMEN DE SEMANAS COTIZADAS")
+                    header_txt = text_p0[:corte] if corte != -1 else text_p0[:2000]
+
                     if not datos["cedula"]:
-                        m_ced = re.search(r'(?:Número de Documento|Documento|C\.C\.)[\s:\n|]*([\d\.]{6,15})', text, re.IGNORECASE)
+                        m_ced = re.search(r'(?:N[úu]mero\s+de\s+Documento|C\.C\.)[\s:\|\n]*([\d\.]{5,15})', header_txt, re.IGNORECASE)
                         if m_ced:
                             datos["cedula"] = m_ced.group(1).replace(".", "").strip()
                         else:
-                            m_ced2 = re.search(r'C[ée]dula\s+de\s+Ciudadan[íi]a[\s\S]{0,80}?\b(\d{6,12})\b', text, re.IGNORECASE)
+                            m_ced2 = re.search(r'C[ée]dula\s+de\s+Ciudadan[íi]a[\s\S]{0,120}?\b(\d{5,12})\b', header_txt, re.IGNORECASE)
                             if m_ced2:
                                 datos["cedula"] = m_ced2.group(1)
 
                     if not datos["nombre"]:
-                        m_nom = re.search(r'(?:Nombres y Apellidos|Nombre)[\s:\|]+([A-ZÑÁÉÍÓÚ\s]{5,60})(?=\n|Dirección|Fecha|Sexo|Tipo)', text, re.IGNORECASE)
-                        if m_nom:
-                            cand = _limpiar_texto_colpensiones(m_nom.group(1))
-                            if not any(x in cand.upper() for x in ["DIRECCION", "RAZON SOCIAL", "APORTANTE"]):
-                                datos["nombre"] = cand
-                        if not datos["nombre"] and datos["cedula"]:
-                            m_nom2 = re.search(rf'{re.escape(datos["cedula"])}\s*\n\s*([A-ZÑÁÉÍÓÚ]{{2,}}(?:\s+[A-ZÑÁÉÍÓÚ]{{2,}}){{1,5}})', text)
-                            if m_nom2:
-                                datos["nombre"] = _limpiar_texto_colpensiones(m_nom2.group(1))
+                        # Variante 1: Nombre en la misma línea ("Nombre: NOMBRE APELLIDO Fecha Afiliación: ...")
+                        m_nom1 = re.search(r'(?:Nombres\s+y\s+Apellidos|Nombre)\s*[:\|]\s*([^\n\|]+)', header_txt, re.IGNORECASE)
+                        if m_nom1:
+                            bruto = re.split(
+                                r'\s+(?:Fecha|Estado|Direcci[óo]n|Correo|Ubicaci[óo]n|Sexo|Tipo|N[úu]mero|Tel[ée]fono)\b',
+                                m_nom1.group(1),
+                                maxsplit=1,
+                                flags=re.IGNORECASE
+                            )[0].strip()
+                            if _es_nombre_persona_valido(bruto):
+                                datos["nombre"] = _limpiar_texto_colpensiones(bruto).upper()
 
-                    m_fecha = re.search(r'(?:Fecha de Nacimiento|Nacimiento)[\s:\n|]*(\d{2}/\d{2}/\d{4})', text, re.IGNORECASE)
+                    if not datos["nombre"] and datos["cedula"]:
+                        # Variante 2: Celdas apiladas / OCR donde el nombre va justo debajo de la cédula
+                        m_nom2 = re.search(rf'{re.escape(datos["cedula"])}\s*\n\s*([^\n]+)', header_txt)
+                        if m_nom2:
+                            cand = re.split(
+                                r'\s+(?:Fecha|Estado|Direcci[óo]n|Correo|Ubicaci[óo]n)\b',
+                                m_nom2.group(1),
+                                maxsplit=1,
+                                flags=re.IGNORECASE
+                            )[0].strip()
+                            if _es_nombre_persona_valido(cand):
+                                datos["nombre"] = _limpiar_texto_colpensiones(cand).upper()
+
+                    m_fecha = re.search(r'(?:Fecha\s+de\s+Nacimiento|Nacimiento)[\s:\|\n]*(\d{2}/\d{2}/\d{4})', header_txt, re.IGNORECASE)
                     if m_fecha:
                         try:
                             datos["fecha_nac"] = datetime.strptime(m_fecha.group(1), "%d/%m/%Y").date()
                         except Exception:
                             pass
 
-                    m_sexo = re.search(r'(?:Sexo)[\s:]*([MF])', text, re.IGNORECASE)
+                    m_sexo = re.search(r'(?:Sexo|G[ée]nero)[\s:\|]*([MF]|Masculino|Femenino)', header_txt, re.IGNORECASE)
                     if m_sexo:
-                        datos["genero"] = "Femenino" if m_sexo.group(1).upper() == 'F' else "Masculino"
+                        datos["genero"] = "Femenino" if m_sexo.group(1).upper().startswith("F") else "Masculino"
+
+                # 3. Último respaldo: encabezado de la página 2 (Colpensiones repite Nombre junto a la Cédula)
+                if not datos["nombre"] and datos["cedula"] and len(pdf.pages) > 1:
+                    text_p1, _ = _extraer_texto_pagina_con_ocr(pdf.pages[1])
+                    if text_p1:
+                        top_p1 = text_p1[:800]
+                        m_antes = re.search(rf'([^\n]+)\n\s*[A-Z]?\s*\n?\s*{re.escape(datos["cedula"])}\b', top_p1)
+                        m_despues = re.search(rf'{re.escape(datos["cedula"])}\s*\n\s*([^\n]+)', top_p1)
+                        for m_cand in (m_antes, m_despues):
+                            if m_cand and _es_nombre_persona_valido(m_cand.group(1)):
+                                datos["nombre"] = _limpiar_texto_colpensiones(m_cand.group(1)).upper()
+                                break
     except Exception:
         pass
     return datos
