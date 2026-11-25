@@ -533,7 +533,6 @@ def extraer_datos_basicos(pdf_file):
                         except Exception:
                             pass
                     else:
-                        # En ciertos PDFs nativos las fechas aparecen antes que las etiquetas (1ra fecha = nacimiento)
                         fechas_hdr = re.findall(r'\b(\d{2}/\d{2}/\d{4})\b', header_txt)
                         if fechas_hdr:
                             try:
@@ -638,7 +637,6 @@ def extraer_tabla_cruda(archivo_pdf):
     for p_txt in paginas_texto:
         up = p_txt.upper()
 
-        # Si la página ya es exclusivamente de Parte Detallada o Instructivo, detener lectura de inmediato
         es_solo_detalle = (
             any(m in up for m in [
                 "DETALLE DE PAGOS EFECTUADOS ANTERIORES A 1995",
@@ -666,7 +664,6 @@ def extraer_tabla_cruda(archivo_pdf):
             else:
                 continue
 
-        # Cortar en cuanto aparezca cualquier marcador de fin de Parte General dentro de la página
         up_b = bloque.upper()
         corte = -1
         for mf in MARCADORES_FIN_PARTE_GENERAL:
@@ -701,7 +698,6 @@ def extraer_tabla_cruda(archivo_pdf):
             linea_pendiente = ""
             continue
 
-        # Saltar encabezados, totales y pies de página
         if any(skip in up for skip in [
             "[1]IDENTIFICAC", "[12]IDENTIFICAC", "IMPRESO POR INTERNET",
             "PERIODO DE INFORME", "ACTUALIZADO A:", "COLPENSIONES NIT",
@@ -714,7 +710,6 @@ def extraer_tabla_cruda(archivo_pdf):
 
         fechas = re.findall(r'\d{2}/\d{2}/\d{4}', s)
         if len(fechas) >= 2:
-            # Reconstruir fila si el nombre del empleador se partió en dos líneas (ej. Tiempos Públicos)
             if not re.match(r'^\d{5,15}\b', s) and linea_pendiente:
                 s = f"{linea_pendiente} {s}"
             linea_pendiente = ""
@@ -728,7 +723,6 @@ def extraer_tabla_cruda(archivo_pdf):
                 p_despues = re.sub(r'(?:^|(?<=\s))\$\s+([\d\.\,]+)', r'$\1', p_despues.strip())
                 tokens = [t for t in re.split(r'\s+', p_despues) if t]
 
-                # Exigir los 5 campos exactos de la Parte General tras Hasta: Salario, Semanas, Lic, Sim, Total
                 if len(tokens) < 5:
                     continue
 
@@ -739,7 +733,6 @@ def extraer_tabla_cruda(archivo_pdf):
                 if not fila_ok:
                     continue
 
-                # Desduplicación exacta de registro
                 clave = (fila_ok[0], fila_ok[2], fila_ok[3], fila_ok[4], fila_ok[8], seccion_actual)
                 if clave in vistos:
                     continue
@@ -748,7 +741,6 @@ def extraer_tabla_cruda(archivo_pdf):
             except Exception:
                 continue
         else:
-            # Posible primera línea de una razón social multilínea ("890200500 EMPRESA SOCIAL DEL ESTADO...")
             if re.match(r'^\d{5,15}\s+[A-ZÑÁÉÍÓÚ]', s):
                 linea_pendiente = s
             else:
@@ -771,7 +763,7 @@ def extraer_tabla_cruda(archivo_pdf):
 
 
 # ==========================================
-# SANEAMIENTO Y CONSOLIDACIÓN (SIN INFLAR LICENCIAS NI BORRAR MESES PARTIDOS)
+# SANEAMIENTO Y CONSOLIDACIÓN
 # ==========================================
 def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas, col_nit=None, col_aportante=None):
     datos = []
@@ -807,7 +799,6 @@ def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas,
             semanas_final = semanas_leidas
             es_simultaneo_cero = (semanas_leidas == 0.0 and sim_leida > 0.0)
 
-            # Solo corregir si excede el máximo físico del periodo (nunca sobrescribir periodos multianuales válidos)
             if semanas_final > max_fisico:
                 semanas_final = max(0.0, round(max_fisico - 0.5 - lic_leida - sim_leida, 2))
             elif not es_simultaneo_cero and semanas_final <= 0.0:
@@ -843,7 +834,7 @@ def aplicar_regla_simultaneidad(df):
     """
     Agrupa por periodo mensual de inicio sumando los IBC concurrentes.
     Si se usa la columna oficial [9] Total (donde Colpensiones ya descontó [7] Lic y [8] Sim),
-    se suman las fracciones del mes (ej. 10 días + 18 días = 4,00 semanas) sin duplicar simultáneos.
+    se suman las fracciones del mes sin duplicar simultáneos.
     """
     if df.empty:
         return df
@@ -859,11 +850,9 @@ def aplicar_regla_simultaneidad(df):
         'IBC': 'sum',
         'Semanas': 'sum' if usa_total else 'max'
     }
-    res = (
+    return (
         df_tmp.groupby('Periodo')
         .agg(agg_dict)
         .reset_index()
         .sort_values('Periodo')
     )
-    return res
-
