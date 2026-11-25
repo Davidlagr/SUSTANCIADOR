@@ -866,3 +866,4 @@ def aplicar_regla_simultaneidad(df):
         .sort_values('Periodo')
     )
     return res
+
